@@ -1,0 +1,312 @@
+openapi: 3.1.0
+info:
+  title: linkly
+  version: 0.1.0
+  summary: URL shortener with privacy-preserving click analytics.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: links
+  - name: redirect
+  - name: ops
+
+paths:
+  /api/links:
+    post:
+      tags: [links]
+      operationId: createLink
+      summary: Create a short link
+      description: |
+        Open to anyone, but rate limited per client IP with a token bucket
+        (`LINKLY_RATE_LIMIT` tokens/second, bursts of `LINKLY_RATE_BURST`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateLinkRequest' }
+            examples:
+              generated:
+                value: { url: https://go.dev/doc/effective_go }
+              alias:
+                value:
+                  url: https://example.com/spring-sale
+                  alias: spring-sale
+                  expires_at: '2026-12-31T23:59:59Z'
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location:
+              description: Path of the new link's stats resource.
+              schema: { type: string, example: /api/links/aZ3kQ9x }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Link' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: The alias is already taken.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: Body larger than 8 KiB.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Content-Type is not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /api/links/{code}:
+    parameters:
+      - $ref: '#/components/parameters/Code'
+    get:
+      tags: [links]
+      operationId: getLinkStats
+      summary: Get a link and its click statistics
+      description: |
+        Clicks are written asynchronously in batches (by default at least
+        once a second), so the newest clicks may not be counted yet.
+        Expired links still return their stats.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LinkStats' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [links]
+      operationId: deleteLink
+      summary: Delete a link and its clicks
+      security:
+        - adminToken: []
+      responses:
+        '204': { description: Deleted }
+        '401':
+          description: Missing or wrong admin token.
+          headers:
+            WWW-Authenticate:
+              schema: { type: string, example: 'Bearer realm="linkly"' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Deletion is disabled because `LINKLY_ADMIN_TOKEN` is not set.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/links/{code}/qr.png:
+    parameters:
+      - $ref: '#/components/parameters/Code'
+    get:
+      tags: [links]
+      operationId: getLinkQRCode
+      summary: QR code for the short URL
+      parameters:
+        - name: size
+          in: query
+          description: Width and height in pixels.
+          schema: { type: integer, minimum: 64, maximum: 1024, default: 256 }
+      responses:
+        '200':
+          description: PNG image
+          content:
+            image/png:
+              schema: { type: string, contentMediaType: image/png }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410': { $ref: '#/components/responses/Gone' }
+
+  /{code}:
+    parameters:
+      - $ref: '#/components/parameters/Code'
+    get:
+      tags: [redirect]
+      operationId: redirect
+      summary: Follow a short link
+      description: |
+        Answers 302 to the target URL and records a click asynchronously.
+        Only the referring host is stored: no IP address, user agent or
+        full referrer URL. HEAD requests are answered but not counted.
+      responses:
+        '302':
+          description: Redirect to the target.
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+            Cache-Control:
+              schema: { type: string, const: no-store }
+        '404':
+          description: Unknown code.
+          content:
+            text/plain:
+              schema: { type: string }
+        '410':
+          description: The link has expired.
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /healthz:
+    get:
+      tags: [ops]
+      operationId: health
+      summary: Liveness and database health
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: ok }
+        '503':
+          description: The database is unreachable.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, const: unavailable }
+
+  /metrics:
+    get:
+      tags: [ops]
+      operationId: metrics
+      summary: Prometheus metrics (text exposition format 0.0.4)
+      responses:
+        '200':
+          description: OK
+          content:
+            text/plain:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    adminToken:
+      type: http
+      scheme: bearer
+      description: The value of `LINKLY_ADMIN_TOKEN`.
+
+  parameters:
+    Code:
+      name: code
+      in: path
+      required: true
+      description: Generated code (7 base62 characters) or custom alias.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{1,32}$'
+        example: aZ3kQ9x
+
+  responses:
+    BadRequest:
+      description: Invalid input. `field` names the offending field when there is one.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { error: url must use http or https, field: url, request_id: 3f9a1c0d5e7b2a46 }
+    NotFound:
+      description: No link has this code.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Gone:
+      description: The link has expired.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Too many link creations from this client.
+      headers:
+        Retry-After:
+          description: Seconds until a request will be accepted.
+          schema: { type: integer, minimum: 1 }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    CreateLinkRequest:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: |
+            Absolute http(s) URL with a host. URLs with embedded credentials
+            and URLs pointing at linkly's own host are rejected.
+        alias:
+          type: string
+          minLength: 3
+          maxLength: 32
+          pattern: '^[A-Za-z0-9](?:[A-Za-z0-9_-]*[A-Za-z0-9])?$'
+          description: |
+            Custom code. Reserved words (api, healthz, metrics, static, admin,
+            login, logout, openapi, docs, stats, www, linkly) are refused,
+            case-insensitively.
+        expires_at:
+          type: string
+          format: date-time
+          description: RFC 3339 time in the future, at most 10 years ahead. Stored with second precision.
+
+    Link:
+      type: object
+      required: [code, short_url, url, created_at, expired, qr_url]
+      properties:
+        code: { type: string, example: aZ3kQ9x }
+        short_url: { type: string, format: uri, example: 'http://localhost:8080/aZ3kQ9x' }
+        url: { type: string, format: uri }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, description: Absent when the link never expires. }
+        expired: { type: boolean }
+        qr_url: { type: string, format: uri }
+
+    LinkStats:
+      allOf:
+        - $ref: '#/components/schemas/Link'
+        - type: object
+          required: [total_clicks, clicks_by_day, top_referrers]
+          properties:
+            total_clicks: { type: integer, minimum: 0 }
+            clicks_by_day:
+              type: array
+              description: Exactly 30 entries, oldest first, UTC days, zero-filled.
+              items:
+                type: object
+                required: [date, clicks]
+                properties:
+                  date: { type: string, format: date, example: '2026-11-04' }
+                  clicks: { type: integer, minimum: 0 }
+            top_referrers:
+              type: array
+              description: Up to 10 referring hosts by click count. `(direct)` means no usable Referer header.
+              items:
+                type: object
+                required: [host, clicks]
+                properties:
+                  host: { type: string, example: news.ycombinator.com }
+                  clicks: { type: integer, minimum: 0 }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        field: { type: string, description: Input field the error refers to, if any. }
+        request_id: { type: string, description: Matches the X-Request-ID response header and the server logs. }
