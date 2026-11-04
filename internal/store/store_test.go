@@ -321,3 +321,49 @@ func BenchmarkInsertClicks(b *testing.B) {
 		}
 	}
 }
+
+// TestConcurrentOpenOnFreshFile: two processes (here, two independent
+// connection pools) starting against the same new database must both
+// succeed, with the schema migrated exactly once.
+func TestConcurrentOpenOnFreshFile(t *testing.T) {
+	ctx := context.Background()
+	for round := range 10 {
+		path := filepath.Join(t.TempDir(), "linkly.db")
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		stores := make([]*Store, 2)
+		for i := range 2 {
+			wg.Go(func() { stores[i], errs[i] = Open(ctx, path) })
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d, opener %d: %v", round, i, err)
+			}
+		}
+		var applied int
+		if err := stores[0].r.QueryRowContext(ctx, `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
+			t.Fatal(err)
+		}
+		if want := len(mustLoadMigrations(t)); applied != want {
+			t.Fatalf("round %d: %d migrations recorded, want %d", round, applied, want)
+		}
+		// Both handles work.
+		mustCreate(t, stores[0], "a")
+		if _, err := stores[1].GetLink(ctx, "a"); err != nil {
+			t.Fatalf("round %d: second handle: %v", round, err)
+		}
+		for _, s := range stores {
+			s.Close()
+		}
+	}
+}
+
+func mustLoadMigrations(t *testing.T) []migration {
+	t.Helper()
+	ms, err := loadMigrations(migrationFS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ms
+}

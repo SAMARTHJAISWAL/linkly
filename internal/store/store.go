@@ -32,7 +32,11 @@ type Store struct {
 	getLink, countClicks, dailyClicks, referrer  *sql.Stmt
 }
 
-const pragmas = "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)" +
+// pragmas are applied in order when each connection opens. busy_timeout
+// comes first so that switching a brand-new file to WAL, which needs an
+// exclusive lock, waits for a concurrently starting process instead of
+// failing at once with SQLITE_BUSY.
+const pragmas = "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)" +
 	"&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)"
 
 // Open opens (creating if needed) the database at path and applies any
