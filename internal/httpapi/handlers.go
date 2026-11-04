@@ -111,6 +111,13 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	in := service.CreateRequest{URL: req.URL, Alias: req.Alias}
 	if req.ExpiresAt != nil {
+		// The service uses the zero time for "never"; an explicit
+		// 0001-01-01T00:00:00Z is a date in the past, not a request for a
+		// link that never expires (omit the field or send null for that).
+		if req.ExpiresAt.IsZero() {
+			writeError(w, r, http.StatusBadRequest, "expires_at must be in the future", "expires_at")
+			return
+		}
 		in.ExpiresAt = *req.ExpiresAt
 	}
 	link, err := s.svc.Create(r.Context(), in)

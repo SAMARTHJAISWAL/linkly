@@ -589,3 +589,20 @@ func TestCreateContentType(t *testing.T) {
 		})
 	}
 }
+
+// TestCreateRejectsZeroExpiry: the zero time is not "never"; only an absent
+// or null expires_at means a link never expires.
+func TestCreateRejectsZeroExpiry(t *testing.T) {
+	e := newEnv(t, envOpts{})
+	resp := e.do("POST", "/api/links", `{"url":"https://example.com","expires_at":"0001-01-01T00:00:00Z"}`)
+	wantStatus(t, resp, http.StatusBadRequest)
+	if er := decode[errorResponse](t, resp); er.Field != "expires_at" {
+		t.Fatalf("error body = %+v, want field expires_at", er)
+	}
+
+	resp = e.do("POST", "/api/links", `{"url":"https://example.com","expires_at":null}`)
+	wantStatus(t, resp, http.StatusCreated)
+	if l := decode[linkResponse](t, resp); l.ExpiresAt != nil {
+		t.Fatalf("null expires_at should mean never, got %v", l.ExpiresAt)
+	}
+}
