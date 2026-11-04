@@ -56,7 +56,7 @@ func Default() Config {
 		ClickBuffer:        10_000,
 		ClickBatch:         500,
 		ClickFlushInterval: time.Second,
-		ShutdownTimeout:    10 * time.Second,
+		ShutdownTimeout:    8 * time.Second, // under docker stop's default 10s grace period
 		LogLevel:           slog.LevelInfo,
 	}
 }

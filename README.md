@@ -50,7 +50,7 @@ docker build -t linkly .
 docker run -p 8080:8080 -v linkly-data:/data linkly
 ```
 
-The image is a static binary on `distroless/static:nonroot`: it has no shell and runs as a non-root user (UID 65532). The database lives in the `/data` volume. `HEALTHCHECK` runs `linkly -healthcheck`, a built-in probe, because the image has no curl.
+The image is a static binary on `distroless/static:nonroot`: it has no shell and runs as a non-root user (UID 65532). The database lives in the `/data` volume. `HEALTHCHECK` runs `linkly -healthcheck`, a built-in probe, because the image has no curl. The image stops on `SIGTERM` (`STOPSIGNAL SIGTERM`); the default `LINKLY_SHUTDOWN_TIMEOUT` of 8s fits inside `docker stop`'s default 10-second grace period, after which Docker sends `SIGKILL`. If you raise the timeout, raise the grace period with it, e.g. `docker run --stop-timeout 30 -e LINKLY_SHUTDOWN_TIMEOUT=25s ...` (or `stop_grace_period` in compose).
 
 > The Dockerfile and compose file have not been built on the author's machine yet (no Docker there). The CI workflow builds the image and smoke-tests it.
 
@@ -117,7 +117,7 @@ Configuration comes only from environment variables. Invalid values stop startup
 | `LINKLY_CLICK_BUFFER` | `10000` | Queue capacity; clicks beyond it are dropped and counted |
 | `LINKLY_CLICK_BATCH` | `500` | Maximum clicks per write transaction |
 | `LINKLY_CLICK_FLUSH_INTERVAL` | `1s` | Longest a click waits in the queue before it is written |
-| `LINKLY_SHUTDOWN_TIMEOUT` | `10s` | Budget for draining requests, flushing clicks and closing the DB; min(2s, half of it) is reserved for the click flush |
+| `LINKLY_SHUTDOWN_TIMEOUT` | `8s` | Budget for draining requests, flushing clicks and closing the DB; min(2s, half of it) is reserved for the click flush |
 | `LINKLY_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 
 ## Architecture

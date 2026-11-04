@@ -19,6 +19,11 @@ func TestLoadDefaults(t *testing.T) {
 	if c != Default() {
 		t.Fatalf("got %+v, want defaults %+v", c, Default())
 	}
+	// Below docker stop's default 10s grace period, so the flush finishes
+	// before SIGKILL.
+	if c.ShutdownTimeout != 8*time.Second {
+		t.Fatalf("default ShutdownTimeout = %v, want 8s", c.ShutdownTimeout)
+	}
 	if got := c.BaseHost(); got != "localhost" {
 		t.Fatalf("BaseHost = %q, want localhost", got)
 	}

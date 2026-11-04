@@ -35,4 +35,10 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD ["/usr/local/bin/linkly", "-healthcheck"]
 
+# linkly drains requests and flushes queued clicks on SIGTERM (the default,
+# stated so a base image cannot change it). The default
+# LINKLY_SHUTDOWN_TIMEOUT of 8s fits docker stop's 10s grace period; raise
+# both together (docker run/stop --stop-timeout, compose stop_grace_period).
+STOPSIGNAL SIGTERM
+
 ENTRYPOINT ["/usr/local/bin/linkly"]
