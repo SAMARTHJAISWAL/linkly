@@ -42,8 +42,8 @@ func (r *Registry) register(name string, m metric) {
 	r.metrics = append(r.metrics, m)
 }
 
-// WriteTo writes every metric in the Prometheus text format.
-func (r *Registry) WriteTo(w io.Writer) {
+// WriteText writes every metric in the Prometheus text format.
+func (r *Registry) WriteText(w io.Writer) {
 	r.mu.Lock()
 	ms := append([]metric(nil), r.metrics...)
 	r.mu.Unlock()
@@ -56,7 +56,7 @@ func (r *Registry) WriteTo(w io.Writer) {
 func (r *Registry) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		r.WriteTo(w)
+		r.WriteText(w)
 	})
 }
 

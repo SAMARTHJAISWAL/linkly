@@ -26,7 +26,7 @@ func TestExposition(t *testing.T) {
 	h.Observe(4)
 
 	var b strings.Builder
-	r.WriteTo(&b)
+	r.WriteText(&b)
 	want := `# HELP jobs_total Jobs run.
 # TYPE jobs_total counter
 jobs_total 3
@@ -113,7 +113,7 @@ func TestConcurrentUse(t *testing.T) {
 				h.Observe(float64(j) / 1000)
 			}
 		})
-		wg.Go(func() { r.WriteTo(&strings.Builder{}) })
+		wg.Go(func() { r.WriteText(&strings.Builder{}) })
 	}
 	wg.Wait()
 	if got := cv.Value("a") + cv.Value("b"); got != 8000 {
