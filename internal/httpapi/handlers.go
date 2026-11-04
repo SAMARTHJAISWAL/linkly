@@ -72,7 +72,7 @@ func (s *Server) toResponse(l store.Link) linkResponse {
 		URL:       l.URL,
 		CreatedAt: l.CreatedAt,
 		Expired:   s.svc.Expired(l),
-		QRURL:     s.baseURL + "/api/links/" + l.Code + "/qr.png",
+		QRURL:     s.apiBaseURL + "/api/links/" + l.Code + "/qr.png",
 	}
 	if !l.ExpiresAt.IsZero() {
 		exp := l.ExpiresAt

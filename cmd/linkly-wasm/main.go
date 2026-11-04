@@ -18,8 +18,10 @@
 //	linkly.storage() -> "ok" | "unavailable" | "error"
 //	    Whether snapshots are reaching localStorage.
 //
-// Configuration is read from globalThis.linklyConfig = {baseURL, storageKey}
-// before main runs, and globalThis.linklyConfig.onReady() is called once
+// Configuration is read from globalThis.linklyConfig = {baseURL, apiBaseURL,
+// storageKey} before main runs (baseURL is the prefix of short links, e.g.
+// "https://user.github.io/linkly/#"; apiBaseURL the prefix of absolute API
+// URLs such as qr_url, e.g. "https://user.github.io/linkly"), and globalThis.linklyConfig.onReady() is called once
 // the API is installed.
 package main
 
@@ -66,6 +68,7 @@ func main() {
 	if baseURL == "" {
 		baseURL = "http://localhost/#"
 	}
+	apiBaseURL := jsString(cfgJS, "apiBaseURL") // empty: same as baseURL
 	key := jsString(cfgJS, "storageKey")
 	if key == "" {
 		key = defaultStorageKey
@@ -95,13 +98,14 @@ func main() {
 	registerMetrics(reg, rec, lim)
 
 	h := httpapi.New(httpapi.Options{
-		Service:  service.New(syncingStore{st, p}, service.Options{SelfHost: cfg.BaseHost()}),
-		Clicks:   rec,
-		Health:   st,
-		Limiter:  lim,
-		Registry: reg,
-		Logger:   log,
-		BaseURL:  baseURL,
+		Service:    service.New(syncingStore{st, p}, service.Options{SelfHost: cfg.BaseHost()}),
+		Clicks:     rec,
+		Health:     st,
+		Limiter:    lim,
+		Registry:   reg,
+		Logger:     log,
+		BaseURL:    baseURL,
+		APIBaseURL: apiBaseURL,
 	})
 
 	api := js.Global().Get("Object").New()

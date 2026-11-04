@@ -3,7 +3,9 @@
 // same-origin requests into it instead of the network:
 //
 //   - fetch("/api/...") calls go through linkly.handle (the real Go
-//     http.Handler) and come back as ordinary Response objects;
+//     http.Handler) and come back as ordinary Response objects; so do
+//     URLs under the demo's own directory, such as the API's qr_url
+//     (<page dir>/api/links/<code>/qr.png);
 //   - <img src="/api/.../qr.png"> is resolved the same way into a blob URL;
 //   - short links are hash routes (#/<code>): opening one runs GET /<code>
 //     through Go, waits for the click to be persisted, then follows the 302.
@@ -19,6 +21,11 @@
 
   // Short links are <page URL>#/<code>; the Go side builds them from this.
   const baseURL = location.origin + location.pathname + "#";
+  // Absolute API URLs in responses (qr_url) live under the page's
+  // directory, e.g. /linkly/api/links/<code>/qr.png, so they are real
+  // paths rather than hash routes; requests to them are answered below.
+  const basePath = location.pathname.replace(/\/[^/]*$/, ""); // "/linkly" or ""
+  const apiBaseURL = location.origin + basePath;
 
   // ---------- boot the Go runtime ----------
 
@@ -28,6 +35,7 @@
 
   window.linklyConfig = {
     baseURL,
+    apiBaseURL,
     storageKey: "linkly-demo:v1",
     onReady: () => markReady(window.linkly),
   };
@@ -49,9 +57,13 @@
 
   // ---------- requests into Go ----------
 
-  function isLocalAPI(url) {
-    return url.origin === location.origin && (url.pathname.startsWith("/api/") ||
-      url.pathname === "/metrics" || url.pathname === "/healthz");
+  // apiPath returns the path to hand to Go for a same-origin API URL,
+  // with the demo's directory prefix removed, or "" for anything else.
+  function apiPath(url) {
+    if (url.origin !== location.origin) return "";
+    let p = url.pathname;
+    if (basePath && p.startsWith(basePath + "/")) p = p.slice(basePath.length);
+    return p.startsWith("/api/") || p === "/metrics" || p === "/healthz" ? p : "";
   }
 
   async function goRequest(method, pathAndQuery, headers, body) {
@@ -65,9 +77,10 @@
   window.fetch = async (input, init) => {
     const req = new Request(input, init);
     const url = new URL(req.url);
-    if (!isLocalAPI(url)) return realFetch(input, init);
+    const path = apiPath(url);
+    if (!path) return realFetch(input, init);
     const body = ["GET", "HEAD"].includes(req.method) ? null : new Uint8Array(await req.arrayBuffer());
-    const res = await goRequest(req.method, url.pathname + url.search, Object.fromEntries(req.headers), body);
+    const res = await goRequest(req.method, path + url.search, Object.fromEntries(req.headers), body);
     return new Response(NULL_BODY.has(res.status) ? null : res.body, { status: res.status, headers: res.headers });
   };
 
@@ -81,13 +94,14 @@
       get() { return srcProp.get.call(this); },
       set(value) {
         const url = new URL(value, location.href);
-        if (!isLocalAPI(url)) { srcProp.set.call(this, value); return; }
-        goRequest("GET", url.pathname + url.search).then((res) => {
+        const path = apiPath(url);
+        if (!path) { srcProp.set.call(this, value); return; }
+        goRequest("GET", path + url.search).then((res) => {
           if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
           if (blobURL) URL.revokeObjectURL(blobURL);
           blobURL = URL.createObjectURL(new Blob([res.body], { type: res.headers["Content-Type"] || "image/png" }));
           srcProp.set.call(this, blobURL);
-        }).catch((e) => console.warn("linkly demo: image", url.pathname, e.message));
+        }).catch((e) => console.warn("linkly demo: image", path, e.message));
       },
     });
   }

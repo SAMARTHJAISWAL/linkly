@@ -215,6 +215,8 @@ func TestWithRealServer(t *testing.T) {
 		Clicks:  rec,
 		Health:  st,
 		BaseURL: base,
+		// As cmd/linkly-wasm sets it: the demo page's directory.
+		APIBaseURL: "https://demo.example/linkly",
 	})
 
 	do := func(method, path, body string, hdr ...string) *httptest.ResponseRecorder {
@@ -232,6 +234,10 @@ func TestWithRealServer(t *testing.T) {
 	w := do("POST", "/api/links", `{"url":"https://example.com/x","alias":"demo1"}`, "Content-Type", "application/json")
 	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"short_url":"`+base+`/demo1"`) {
 		t.Fatalf("create: %d %s", w.Code, w.Body)
+	}
+	// qr_url must be a real path under the demo, not a hash route.
+	if body := w.Body.String(); !strings.Contains(body, `"qr_url":"https://demo.example/linkly/api/links/demo1/qr.png"`) {
+		t.Fatalf("qr_url does not resolve under the demo: %s", body)
 	}
 	if w := do("POST", "/api/links", `{"url":"https://demo.example/linkly/#/demo1"}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("self link: %d %s", w.Code, w.Body)

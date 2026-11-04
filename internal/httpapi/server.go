@@ -3,6 +3,7 @@
 package httpapi
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"net/http"
@@ -35,7 +36,11 @@ type Options struct {
 	Registry *metrics.Registry  // where HTTP metrics are registered; nil creates a private one
 	Logger   *slog.Logger
 
-	BaseURL    string // public origin for short URLs, e.g. "https://sho.rt"
+	BaseURL string // public origin for short URLs, e.g. "https://sho.rt"
+	// APIBaseURL is the prefix of absolute API URLs in responses (qr_url).
+	// Empty means BaseURL, which is right for the server; the browser demo,
+	// whose short links are hash routes, sets it to the page's directory.
+	APIBaseURL string
 	AdminToken string // bearer token for DELETE; empty disables deletion
 	TrustProxy bool   // take the client IP from X-Forwarded-For
 	Now        func() time.Time
@@ -53,6 +58,7 @@ type Server struct {
 	reg        *metrics.Registry
 	log        *slog.Logger
 	baseURL    string
+	apiBaseURL string
 	adminToken string
 	trustProxy bool
 	now        func() time.Time
@@ -110,6 +116,7 @@ func New(opts Options) *Server {
 		reg:        opts.Registry,
 		log:        opts.Logger,
 		baseURL:    opts.BaseURL,
+		apiBaseURL: cmp.Or(opts.APIBaseURL, opts.BaseURL),
 		adminToken: opts.AdminToken,
 		trustProxy: opts.TrustProxy,
 		now:        opts.Now,
