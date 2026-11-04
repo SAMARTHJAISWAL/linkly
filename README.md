@@ -4,6 +4,8 @@ A self-hosted URL shortener with click analytics that respect privacy. It is one
 
 Redirects take one indexed read. The redirect handler queues the click and returns; a background writer stores clicks in batches. The analytics keep the day and the referring host of each click, and never the visitor's IP address or the full referrer URL.
 
+**▶ Live demo: [samarthjaiswal.github.io/linkly](https://samarthjaiswal.github.io/linkly/)**, linkly's real Go code compiled to WebAssembly and running in your browser ([how it works](#live-demo)).
+
 ![Creating a short link in the linkly UI](docs/screenshot-create.jpg)
 
 <details>
@@ -24,6 +26,26 @@ Redirects take one indexed read. The redirect handler queues the click and retur
 - **Admin delete.** `DELETE` requires a bearer token of at least 16 bytes, compared in constant time. Deletion is disabled until a token is configured. After 5 wrong tokens a client gets `429` (with `Retry-After`) for every `DELETE`, right token or not, and earns one more attempt per minute.
 - **Operations.** `/healthz` checks the database. `/metrics` serves the Prometheus text format. Logs are structured JSON (`log/slog`) with request IDs. The server recovers from handler panics, sets timeouts on the `http.Server`, and shuts down gracefully, flushing queued clicks first.
 - **Web UI.** The UI needs no framework and no build step. It is responsive, follows the system's dark mode, and runs under a strict Content-Security-Policy.
+
+## Live demo
+
+**https://samarthjaiswal.github.io/linkly/** runs linkly's real Go code in your browser, compiled to WebAssembly: the same `service`, the `httpapi` handler, the token-bucket rate limiter, the async click recorder and the metrics. There is no server behind it; GitHub Pages only serves static files.
+
+How it differs from the real server:
+
+- **Storage** is an in-memory store (`internal/memstore`) saved to `localStorage` instead of SQLite, so links exist only in the browser that created them. Opening a demo short link on another device shows a "not found" page that explains this.
+- **Short links** are hash routes, `https://samarthjaiswal.github.io/linkly/#/<code>`, because a static host can't route `/linkly/<code>`. Opening one runs `GET /<code>` through the Go handler, waits for the click to be recorded, then follows the 302. A `404.html` forwards plain `/linkly/<code>` paths to the hash route.
+- **Rate limiting** sees a single client (you): 10 links in a burst, then 1 per second.
+- **Self-links:** targets on `samarthjaiswal.github.io` are refused as links to the shortener's own host, as the real server does for its own host.
+
+Build it locally:
+
+```bash
+make demo         # GOOS=js GOARCH=wasm build + static site in dist-demo/
+make demo-serve   # http://localhost:8000/linkly/ (python's server can't show the 404.html forwarding)
+```
+
+`.github/workflows/pages.yml` builds and deploys the demo on every push to `main`. `linkly.wasm` is about 9 MB (about 2.4 MB gzipped).
 
 ## Quickstart
 
