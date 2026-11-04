@@ -117,6 +117,94 @@ func TestShutdownFlushesClicks(t *testing.T) {
 	}
 }
 
+// TestShutdownWithSlowClientStillFlushesClicks: a client that holds a
+// connection open through the whole HTTP drain must not eat the time the
+// click flush needs, and the database must not close under the worker.
+func TestShutdownWithSlowClientStillFlushesClicks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "linkly.db")
+	cfg := config.Default()
+	cfg.DBPath = dbPath
+	cfg.ClickFlushInterval = time.Hour
+	cfg.ClickBatch = 50 // several write transactions to finish
+	cfg.ShutdownTimeout = time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a, err := New(ctx, cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runErr := make(chan error, 1)
+	go func() { runErr <- a.Run(ctx, ln) }()
+	base := "http://" + ln.Addr().String()
+
+	resp, err := http.Post(base+"/api/links", "application/json", strings.NewReader(`{"url":"https://example.com"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var link struct{ Code string }
+	json.NewDecoder(resp.Body).Decode(&link)
+	resp.Body.Close()
+
+	noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	const clicks = 400
+	for range clicks {
+		r, err := noFollow.Get(base + "/" + link.Code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+	}
+
+	// The slow client: half a request, so its connection stays active and
+	// http.Server.Shutdown waits for it until the deadline.
+	slow, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer slow.Close()
+	if _, err := slow.Write([]byte("GET /healthz HTTP/1.1\r\nHost: x\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond) // let the server start reading it
+
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-runErr:
+		// The HTTP drain is expected to time out; nothing else may fail.
+		if err != nil && (strings.Contains(err.Error(), "flushing clicks") || strings.Contains(err.Error(), "closing database")) {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after cancel")
+	}
+	if d := time.Since(start); d > cfg.ShutdownTimeout+time.Second {
+		t.Errorf("shutdown took %v, budget %v", d, cfg.ShutdownTimeout)
+	}
+
+	st, err := store.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	l, err := st.GetLink(context.Background(), link.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := st.Stats(context.Background(), l.ID, time.Time{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Total != clicks {
+		t.Fatalf("after shutdown total = %d, want %d", s.Total, clicks)
+	}
+}
+
 func statsTotal(t *testing.T, base, code string) int64 {
 	t.Helper()
 	resp, err := http.Get(base + "/api/links/" + code)

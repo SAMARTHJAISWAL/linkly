@@ -35,7 +35,7 @@ type Config struct {
 	ClickBatch         int           // LINKLY_CLICK_BATCH: max clicks per INSERT transaction.
 	ClickFlushInterval time.Duration // LINKLY_CLICK_FLUSH_INTERVAL: max time a click waits in the queue.
 
-	ShutdownTimeout time.Duration // LINKLY_SHUTDOWN_TIMEOUT: budget for draining requests and clicks.
+	ShutdownTimeout time.Duration // LINKLY_SHUTDOWN_TIMEOUT: total budget for draining requests and flushing clicks.
 	LogLevel        slog.Level    // LINKLY_LOG_LEVEL: debug, info, warn or error.
 }
 

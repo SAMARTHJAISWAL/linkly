@@ -47,6 +47,12 @@ type Recorder struct {
 	queue  chan Click
 	done   chan struct{}
 
+	// writeCtx is the parent of every sink write. Close cancels it when its
+	// own deadline passes, which cuts the in-flight write short and makes
+	// the worker discard what is left instead of writing it.
+	writeCtx     context.Context
+	cancelWrites context.CancelFunc
+
 	pending  atomic.Int64 // accepted but not yet written (queued or in the worker's batch)
 	recorded atomic.Uint64
 	dropped  atomic.Uint64
@@ -81,6 +87,7 @@ func NewRecorder(sink Sink, opts Options) *Recorder {
 		queue: make(chan Click, opts.Buffer),
 		done:  make(chan struct{}),
 	}
+	r.writeCtx, r.cancelWrites = context.WithCancel(context.Background())
 	go r.run()
 	return r
 }
@@ -107,8 +114,11 @@ func (r *Recorder) Record(c Click) bool {
 	}
 }
 
-// Close stops accepting clicks, flushes everything still queued and waits
-// for the worker to finish or ctx to expire, whichever comes first.
+// Close stops accepting clicks and flushes everything still queued. If
+// ctx expires first, the write in progress is cancelled and the clicks not
+// yet written are dropped (and counted as failed), and Close returns
+// ctx.Err(). Either way Close returns only after the worker has stopped,
+// so the sink can be closed safely as soon as it returns.
 func (r *Recorder) Close(ctx context.Context) error {
 	r.mu.Lock()
 	if r.closed {
@@ -119,10 +129,13 @@ func (r *Recorder) Close(ctx context.Context) error {
 	close(r.queue)
 	r.mu.Unlock()
 
+	defer r.cancelWrites()
 	select {
 	case <-r.done:
 		return nil
 	case <-ctx.Done():
+		r.cancelWrites()
+		<-r.done // quick now: writes fail fast and the rest is discarded
 		return ctx.Err()
 	}
 }
@@ -169,7 +182,12 @@ func (r *Recorder) run() {
 }
 
 func (r *Recorder) write(batch []Click) {
-	ctx, cancel := context.WithTimeout(context.Background(), r.opts.WriteTimeout)
+	if r.writeCtx.Err() != nil { // Close gave up: discard rather than write
+		r.pending.Add(-int64(len(batch)))
+		r.failed.Add(uint64(len(batch)))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.writeCtx, r.opts.WriteTimeout)
 	defer cancel()
 
 	n, err := r.sink.InsertClicks(ctx, batch)

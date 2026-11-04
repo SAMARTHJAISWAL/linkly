@@ -117,7 +117,7 @@ Configuration comes only from environment variables. Invalid values stop startup
 | `LINKLY_CLICK_BUFFER` | `10000` | Queue capacity; clicks beyond it are dropped and counted |
 | `LINKLY_CLICK_BATCH` | `500` | Maximum clicks per write transaction |
 | `LINKLY_CLICK_FLUSH_INTERVAL` | `1s` | Longest a click waits in the queue before it is written |
-| `LINKLY_SHUTDOWN_TIMEOUT` | `10s` | Shared deadline for draining requests, flushing clicks and closing the DB |
+| `LINKLY_SHUTDOWN_TIMEOUT` | `10s` | Budget for draining requests, flushing clicks and closing the DB; min(2s, half of it) is reserved for the click flush |
 | `LINKLY_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 
 ## Architecture
@@ -156,7 +156,7 @@ GET /{code} ──► Recorder.Record(click)        non-blocking: select { case 
     · multi-row INSERT ... VALUES (?,?,?),(?,?,?),...
 ```
 
-The shutdown order is fixed. `http.Server.Shutdown` waits for in-flight requests, because those requests may still enqueue clicks. The recorder then closes and drains its queue, and only then does the database close. One deadline covers all three steps.
+The shutdown order is fixed. `http.Server.Shutdown` waits for in-flight requests, because those requests may still enqueue clicks. The recorder then closes and drains its queue, and only then does the database close. The whole sequence fits in `LINKLY_SHUTDOWN_TIMEOUT`, but the HTTP drain may not use all of it: a reserve of min(2s, half the timeout) is kept for the click flush, so a slow client holding a connection open cannot starve it. If the flush itself runs out of time, the write in progress is cancelled and the remaining clicks are counted as failed; the recorder's worker has always stopped before the database closes.
 
 ## Design decisions and trade-offs
 

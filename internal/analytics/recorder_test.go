@@ -239,3 +239,33 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// TestCloseWaitsForWorkerAfterDeadline: when ctx expires, Close abandons
+// what is left but still returns only after the worker has stopped, so the
+// caller can close the sink (the database) without a write in progress.
+func TestCloseWaitsForWorkerAfterDeadline(t *testing.T) {
+	sink := &memSink{gate: make(chan struct{})} // never opened: writes block until their ctx ends
+	r := NewRecorder(sink, Options{Buffer: 100, BatchSize: 1, FlushInterval: time.Hour, WriteTimeout: time.Minute})
+	for i := range 5 {
+		r.Record(click(i))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := r.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close = %v, want DeadlineExceeded", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("Close took %v; the in-flight write should have been cancelled", d)
+	}
+	select {
+	case <-r.done:
+	default:
+		t.Fatal("Close returned while the worker was still running")
+	}
+	// Nothing was written and every click is accounted for.
+	if r.Pending() != 0 || r.Recorded()+r.Failed()+r.Dropped() != 5 {
+		t.Fatalf("pending=%d recorded=%d failed=%d dropped=%d", r.Pending(), r.Recorded(), r.Failed(), r.Dropped())
+	}
+}

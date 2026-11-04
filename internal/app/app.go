@@ -121,23 +121,41 @@ func (a *App) Run(ctx context.Context, ln net.Listener) error {
 	return errors.Join(err, a.shutdown(srv))
 }
 
+// maxFlushReserve is how much of the shutdown budget is kept back for
+// flushing clicks, so slow HTTP clients cannot use all of it.
+const maxFlushReserve = 2 * time.Second
+
 // shutdown stops accepting requests and waits for in-flight ones, then
 // flushes queued clicks (which those requests may have added), then closes
-// the database. One deadline covers all three steps.
+// the database.
+//
+// The whole sequence fits in ShutdownTimeout. The HTTP drain may use all
+// of it except a reserve of min(2s, ShutdownTimeout/2), so a client that
+// holds its connection open cannot starve the click flush, which gets the
+// reserve plus whatever the drain left unused. The recorder's Close
+// returns only once its worker has stopped, even when the flush runs out
+// of time, so the database never closes under a write.
 func (a *App) shutdown(srv *http.Server) error {
-	ctx, cancel := context.WithTimeout(context.Background(), a.cfg.ShutdownTimeout)
-	defer cancel()
+	start := time.Now()
+	reserve := min(maxFlushReserve, a.cfg.ShutdownTimeout/2)
+	httpCtx, cancelHTTP := context.WithDeadline(context.Background(), start.Add(a.cfg.ShutdownTimeout-reserve))
+	defer cancelHTTP()
+	flushCtx, cancelFlush := context.WithDeadline(context.Background(), start.Add(a.cfg.ShutdownTimeout))
+	defer cancelFlush()
 
 	var errs []error
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(httpCtx); err != nil {
 		errs = append(errs, fmt.Errorf("http shutdown: %w", err))
+		// Drop the stragglers' connections; clicks their handlers try to
+		// record from now on are refused and counted as dropped.
+		_ = srv.Close()
 	}
 	pending := a.recorder.Pending()
-	if err := a.recorder.Close(ctx); err != nil {
+	if err := a.recorder.Close(flushCtx); err != nil {
 		errs = append(errs, fmt.Errorf("flushing clicks: %w", err))
 	}
 	a.log.Info("clicks flushed", "pending_at_shutdown", pending, "recorded_total", a.recorder.Recorded(),
-		"dropped_total", a.recorder.Dropped())
+		"dropped_total", a.recorder.Dropped(), "failed_total", a.recorder.Failed())
 	if err := a.store.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("closing database: %w", err))
 	}
