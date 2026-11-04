@@ -40,7 +40,16 @@ function route() {
     if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   });
   if (stats) {
-    const code = decodeURIComponent(hash.slice("#/stats/".length));
+    const raw = hash.slice("#/stats/".length);
+    let code;
+    try {
+      code = decodeURIComponent(raw);
+    } catch {
+      // A malformed escape such as "%E0": say so instead of throwing.
+      show($("stats"), false);
+      setError($("stats-error"), `Invalid code “${raw}” in the address.`);
+      return;
+    }
     if (hash.startsWith("#/stats/") && code) {
       $("stats-code").value = code;
       loadStats(code);
