@@ -1,0 +1,12 @@
+.git
+.github
+bin
+dist
+docs
+*.db
+*.db-shm
+*.db-wal
+coverage.out
+*.test
+*.prof
+.env

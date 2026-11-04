@@ -1,0 +1,22 @@
+services:
+  linkly:
+    build:
+      context: .
+      args:
+        VERSION: compose
+    image: linkly:local
+    ports:
+      - "8080:8080"
+    environment:
+      LINKLY_BASE_URL: http://localhost:8080
+      # Set a long random value to enable DELETE /api/links/{code}.
+      LINKLY_ADMIN_TOKEN: ${LINKLY_ADMIN_TOKEN:-}
+      LINKLY_RATE_LIMIT: "1"
+      LINKLY_RATE_BURST: "10"
+    volumes:
+      - linkly-data:/data
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+volumes:
+  linkly-data:
