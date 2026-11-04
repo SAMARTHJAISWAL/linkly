@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -104,8 +105,21 @@ func (c Config) validate() []error {
 		errs = append(errs, errors.New("LINKLY_BASE_URL must include a host"))
 	case u.Path != "" || u.RawQuery != "" || u.Fragment != "":
 		errs = append(errs, errors.New("LINKLY_BASE_URL must be an origin with no path, query or fragment"))
+	case u.User != nil:
+		errs = append(errs, errors.New("LINKLY_BASE_URL must not contain credentials"))
+	case strings.HasSuffix(u.Hostname(), "."):
+		// Short URLs are built from BaseURL verbatim, and the self-link check
+		// compares normalised hosts; one spelling per host keeps both simple.
+		errs = append(errs, errors.New("LINKLY_BASE_URL host must not end with a trailing dot"))
+	case !isASCII(u.Hostname()):
+		errs = append(errs, errors.New("LINKLY_BASE_URL host must be ASCII; use the punycode (xn--) form"))
 	}
-	if c.RateLimit < 0 {
+	switch {
+	case math.IsNaN(c.RateLimit) || math.IsInf(c.RateLimit, 0):
+		// NaN compares false with everything, so it would pass ">= 0" and
+		// silently disable limiting.
+		errs = append(errs, errors.New("LINKLY_RATE_LIMIT must be a finite number"))
+	case c.RateLimit < 0:
 		errs = append(errs, errors.New("LINKLY_RATE_LIMIT must be >= 0"))
 	}
 	if c.RateLimit > 0 && c.RateBurst < 1 {
@@ -136,6 +150,15 @@ func (c Config) BaseHost() string {
 		return ""
 	}
 	return strings.ToLower(u.Hostname())
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 type parser struct {
