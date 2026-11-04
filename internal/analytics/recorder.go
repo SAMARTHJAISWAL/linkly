@@ -47,6 +47,7 @@ type Recorder struct {
 	queue  chan Click
 	done   chan struct{}
 
+	pending  atomic.Int64 // accepted but not yet written (queued or in the worker's batch)
 	recorded atomic.Uint64
 	dropped  atomic.Uint64
 	failed   atomic.Uint64
@@ -94,10 +95,13 @@ func (r *Recorder) Record(c Click) bool {
 		r.dropped.Add(1)
 		return false
 	}
+	// Count before sending so the worker can never decrement first.
+	r.pending.Add(1)
 	select {
 	case r.queue <- c:
 		return true
 	default:
+		r.pending.Add(-1)
 		r.dropped.Add(1)
 		return false
 	}
@@ -128,8 +132,9 @@ func (r *Recorder) Recorded() uint64 { return r.recorded.Load() }
 func (r *Recorder) Dropped() uint64  { return r.dropped.Load() }
 func (r *Recorder) Failed() uint64   { return r.failed.Load() }
 
-// Pending reports how many clicks are queued and not yet written.
-func (r *Recorder) Pending() int { return len(r.queue) }
+// Pending reports how many accepted clicks have not been written yet,
+// whether still in the queue or in the batch being assembled.
+func (r *Recorder) Pending() int { return int(r.pending.Load()) }
 
 func (r *Recorder) run() {
 	defer close(r.done)
@@ -168,6 +173,7 @@ func (r *Recorder) write(batch []Click) {
 	defer cancel()
 
 	n, err := r.sink.InsertClicks(ctx, batch)
+	r.pending.Add(-int64(len(batch)))
 	r.recorded.Add(uint64(n))
 	if err != nil {
 		r.failed.Add(uint64(len(batch) - n))

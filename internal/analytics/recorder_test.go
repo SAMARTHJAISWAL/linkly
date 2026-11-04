@@ -120,7 +120,7 @@ func TestRecordNeverBlocksWhenFull(t *testing.T) {
 	// The worker takes the first click and blocks inside the sink; the next
 	// two fill the buffer; everything after that must be dropped at once.
 	r.Record(click(0))
-	waitFor(t, func() bool { return r.Pending() == 0 })
+	waitFor(t, func() bool { return len(r.queue) == 0 })
 	accepted := 0
 	start := time.Now()
 	for i := 1; i <= 10; i++ {
@@ -130,6 +130,9 @@ func TestRecordNeverBlocksWhenFull(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
 		t.Fatalf("Record blocked for %v with a full buffer", elapsed)
+	}
+	if r.Pending() != 3 {
+		t.Fatalf("Pending = %d, want 3 (one in the sink, two queued)", r.Pending())
 	}
 	if accepted != 2 || r.Dropped() != 8 {
 		t.Fatalf("accepted=%d dropped=%d, want 2 and 8", accepted, r.Dropped())
