@@ -2,7 +2,10 @@ module github.com/SAMARTHJAISWAL/linkly
 
 go 1.27.3
 
-require modernc.org/sqlite v1.61.1
+require (
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+	modernc.org/sqlite v1.61.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>linkly</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/" aria-label="linkly home">
+      <img src="/static/favicon.svg" alt="" width="28" height="28">
+      <span>linkly</span>
+    </a>
+    <nav>
+      <a href="#/" data-nav="shorten">Shorten</a>
+      <a href="#/stats" data-nav="stats">Stats</a>
+    </nav>
+  </header>
+
+  <main>
+    <section id="view-shorten" class="view">
+      <h1>Short links, honest stats.</h1>
+      <p class="lede">Paste a long URL, get a short one with a QR code. Clicks are counted by day and referring site; no IPs, no cookies.</p>
+
+      <form id="create-form" class="card" novalidate>
+        <label class="field">
+          <span>Long URL</span>
+          <input id="url" name="url" type="url" inputmode="url" placeholder="https://example.com/a/very/long/path" required autocomplete="off" autofocus>
+        </label>
+        <div class="row">
+          <label class="field">
+            <span>Custom alias <em>optional</em></span>
+            <input id="alias" name="alias" type="text" placeholder="launch-2026" pattern="[A-Za-z0-9_\-]{3,32}" maxlength="32" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field">
+            <span>Expires</span>
+            <select id="expiry" name="expiry">
+              <option value="">Never</option>
+              <option value="3600">In 1 hour</option>
+              <option value="86400">In 1 day</option>
+              <option value="604800">In 7 days</option>
+              <option value="2592000">In 30 days</option>
+            </select>
+          </label>
+        </div>
+        <p id="create-error" class="error" role="alert" hidden></p>
+        <button type="submit" class="primary" id="create-btn">Shorten</button>
+      </form>
+
+      <div id="result" class="card result" hidden aria-live="polite">
+        <div class="result-main">
+          <span class="label">Your short link</span>
+          <div class="short-row">
+            <a id="short-url" href="#" target="_blank" rel="noopener"></a>
+            <button type="button" id="copy-btn" class="secondary">Copy</button>
+          </div>
+          <p class="muted target">→ <span id="target-url"></span></p>
+          <p class="muted" id="expiry-note" hidden></p>
+          <a id="stats-link" class="text-link" href="#">View stats →</a>
+        </div>
+        <img id="qr" class="qr" alt="QR code for the short link" width="160" height="160">
+      </div>
+    </section>
+
+    <section id="view-stats" class="view" hidden>
+      <h1>Link stats</h1>
+      <form id="stats-form" class="card inline-form">
+        <label class="field grow">
+          <span>Short code or link</span>
+          <input id="stats-code" type="text" placeholder="aZ3kQ9x or http://localhost:8080/aZ3kQ9x" autocomplete="off" spellcheck="false" required>
+        </label>
+        <button type="submit" class="primary">Look up</button>
+      </form>
+      <p id="stats-error" class="error" role="alert" hidden></p>
+
+      <div id="stats" hidden>
+        <div class="card">
+          <div class="stats-head">
+            <div class="min0">
+              <a id="s-short" class="mono" href="#" target="_blank" rel="noopener"></a>
+              <p class="muted target">→ <span id="s-target"></span></p>
+              <p class="muted small" id="s-meta"></p>
+            </div>
+            <div class="hero">
+              <span class="hero-num" id="s-total">0</span>
+              <span class="label">total clicks</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Clicks per day <span class="muted small">last 30 days, UTC</span></h2>
+          <div id="chart" class="chart" role="img"></div>
+          <div class="axis"><span id="axis-start"></span><span id="axis-end"></span></div>
+          <details class="table-view">
+            <summary>Show as table</summary>
+            <table><thead><tr><th>Date</th><th>Clicks</th></tr></thead><tbody id="daily-table"></tbody></table>
+          </details>
+        </div>
+
+        <div class="card">
+          <h2>Top referrers</h2>
+          <ol id="referrers" class="referrers"></ol>
+          <p id="no-referrers" class="muted" hidden>No clicks yet.</p>
+        </div>
+        <p class="muted small">Clicks are written in batches, so the newest ones can take a second or two to appear.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="muted small">linkly · <a href="/metrics">metrics</a> · <a href="/healthz">health</a></footer>
+  <div id="tooltip" class="tooltip" role="tooltip" hidden></div>
+</body>
+</html>
