@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/SAMARTHJAISWAL/linkly/internal/analytics"
@@ -61,12 +62,12 @@ type Stats struct {
 type Store struct {
 	w, r *sql.DB
 
-	insertLink, deleteLink, insertClick         *sql.Stmt
-	getLink, countClicks, dailyClicks, referrer *sql.Stmt
+	insertLink, deleteLink, linkID, insertClicks *sql.Stmt
+	getLink, countClicks, dailyClicks, referrer  *sql.Stmt
 }
 
 const pragmas = "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)" +
-	"&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)"
+	"&_pragma=foreign_keys(1)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)"
 
 // Open opens (creating if needed) the database at path and applies any
 // pending migrations.
@@ -111,11 +112,10 @@ func (s *Store) prepare(ctx context.Context) error {
 	}{
 		{s.w, &s.insertLink, `INSERT INTO links (code, url, created_at, expires_at) VALUES (?, ?, ?, ?)`},
 		{s.w, &s.deleteLink, `DELETE FROM links WHERE code = ?`},
-		// Resolving the code inside the INSERT means a click for a link
-		// deleted while the click sat in the queue is silently skipped
-		// instead of failing the whole batch on the foreign key.
-		{s.w, &s.insertClick, `INSERT INTO clicks (link_id, clicked_at, referrer_host)
-			SELECT id, ?, ? FROM links WHERE code = ?`},
+		// Looked up on the write connection, inside the click transaction,
+		// so a concurrent delete cannot slip in between lookup and insert.
+		{s.w, &s.linkID, `SELECT id FROM links WHERE code = ?`},
+		{s.w, &s.insertClicks, insertClicksSQL(clicksPerInsert)},
 		{s.r, &s.getLink, `SELECT id, code, url, created_at, expires_at FROM links WHERE code = ?`},
 		{s.r, &s.countClicks, `SELECT count(*) FROM clicks WHERE link_id = ?`},
 		{s.r, &s.dailyClicks, `SELECT date(clicked_at, 'unixepoch') AS day, count(*)
@@ -138,7 +138,7 @@ func (s *Store) prepare(ctx context.Context) error {
 // Close releases the statements and both pools.
 func (s *Store) Close() error {
 	for _, st := range []*sql.Stmt{
-		s.insertLink, s.deleteLink, s.insertClick,
+		s.insertLink, s.deleteLink, s.linkID, s.insertClicks,
 		s.getLink, s.countClicks, s.dailyClicks, s.referrer,
 	} {
 		if st != nil {
@@ -209,9 +209,18 @@ func (s *Store) DeleteLink(ctx context.Context, code string) error {
 	return nil
 }
 
+// clicksPerInsert is how many rows go into one multi-row INSERT. Three
+// parameters per row keeps it far below SQLite's variable limit.
+const clicksPerInsert = 200
+
 // InsertClicks writes a batch of clicks in one transaction and reports how
-// many were stored. Clicks for codes that no longer exist are skipped.
+// many were stored. Clicks for codes that no longer exist (deleted while
+// the click sat in the queue) are skipped rather than failing the batch.
 // It implements analytics.Sink.
+//
+// Each distinct code is resolved to its link ID once, then rows are written
+// with multi-row INSERTs: per-statement overhead, not SQLite itself, is
+// what limits a row-at-a-time loop.
 func (s *Store) InsertClicks(ctx context.Context, clicks []analytics.Click) (int, error) {
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
@@ -219,23 +228,56 @@ func (s *Store) InsertClicks(ctx context.Context, clicks []analytics.Click) (int
 	}
 	defer tx.Rollback()
 
-	stmt := tx.StmtContext(ctx, s.insertClick)
-	var stored int64
+	lookup := tx.StmtContext(ctx, s.linkID)
+	ids := make(map[string]int64)
+	args := make([]any, 0, 3*len(clicks))
 	for _, c := range clicks {
-		res, err := stmt.ExecContext(ctx, c.At.Unix(), c.RefHost, c.Code)
+		id, seen := ids[c.Code]
+		if !seen {
+			err := lookup.QueryRowContext(ctx, c.Code).Scan(&id)
+			switch {
+			case errors.Is(err, sql.ErrNoRows):
+				id = 0
+			case err != nil:
+				return 0, err
+			}
+			ids[c.Code] = id
+		}
+		if id != 0 {
+			args = append(args, id, c.At.Unix(), c.RefHost)
+		}
+	}
+
+	rows := len(args) / 3
+	full := tx.StmtContext(ctx, s.insertClicks)
+	for start := 0; start < rows; start += clicksPerInsert {
+		n := min(clicksPerInsert, rows-start)
+		chunk := args[3*start : 3*(start+n)]
+		if n == clicksPerInsert {
+			_, err = full.ExecContext(ctx, chunk...)
+		} else {
+			_, err = tx.ExecContext(ctx, insertClicksSQL(n), chunk...)
+		}
 		if err != nil {
 			return 0, err
 		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return 0, err
-		}
-		stored += n
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	return int(stored), nil
+	return rows, nil
+}
+
+func insertClicksSQL(rows int) string {
+	var b strings.Builder
+	b.WriteString("INSERT INTO clicks (link_id, clicked_at, referrer_host) VALUES ")
+	for i := range rows {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString("(?,?,?)")
+	}
+	return b.String()
 }
 
 // Stats returns the total click count for a link, its clicks per UTC day

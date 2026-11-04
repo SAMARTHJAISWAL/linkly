@@ -290,3 +290,32 @@ func TestLoadMigrationsValidation(t *testing.T) {
 		})
 	}
 }
+
+// BenchmarkInsertClicks measures click write throughput in batches of the
+// default size (500), spread over a few links. ns/op is per click.
+func BenchmarkInsertClicks(b *testing.B) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(b.TempDir(), "bench.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer s.Close()
+	codes := []string{"aaa", "bbb", "ccc", "ddd"}
+	for _, c := range codes {
+		if _, err := s.CreateLink(ctx, Link{Code: c, URL: "https://example.com", CreatedAt: time.Now()}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	const batch = 500
+	clicks := make([]analytics.Click, batch)
+	for i := range clicks {
+		clicks[i] = analytics.Click{Code: codes[i%len(codes)], At: time.Now(), RefHost: "news.ycombinator.com"}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i += batch {
+		n := min(batch, b.N-i)
+		if _, err := s.InsertClicks(ctx, clicks[:n]); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
