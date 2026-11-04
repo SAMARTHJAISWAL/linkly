@@ -66,9 +66,3 @@ func (c *pngCache) put(k qrKey, png []byte) {
 		delete(c.items, oldest.Value.(*pngEntry).key)
 	}
 }
-
-func (c *pngCache) len() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.order.Len()
-}

@@ -757,6 +757,12 @@ func TestQRRendersAreCachedAndThrottled(t *testing.T) {
 	wantStatus(t, qr(900), http.StatusOK)
 }
 
+func (c *pngCache) len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.order.Len()
+}
+
 func TestQRCacheIsBounded(t *testing.T) {
 	c := newPNGCache(3)
 	for i := range 5 {
