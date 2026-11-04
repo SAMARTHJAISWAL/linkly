@@ -1,4 +1,11 @@
+<img src="docs/logo.svg" alt="linkly logo" width="72" align="left">
+
 # linkly
+
+[![CI](https://github.com/SAMARTHJAISWAL/linkly/actions/workflows/ci.yml/badge.svg)](https://github.com/SAMARTHJAISWAL/linkly/actions/workflows/ci.yml)
+[![Live demo](https://img.shields.io/badge/live%20demo-samarthjaiswal.github.io%2Flinkly-2a78d6)](https://samarthjaiswal.github.io/linkly/)
+
+<br clear="left">
 
 A self-hosted URL shortener with click analytics that respect privacy. It is one static Go binary with an embedded web UI, backed by a single SQLite file.
 
