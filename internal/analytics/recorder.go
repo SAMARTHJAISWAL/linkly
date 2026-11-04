@@ -17,12 +17,15 @@ import (
 // Click is one recorded redirect. It deliberately holds no IP address,
 // user agent or full referrer URL: only the referring host.
 type Click struct {
-	Code    string
+	LinkID  int64  // the link the redirect resolved; clicks are stored against it
+	Code    string // informational: the code that was requested
 	At      time.Time
 	RefHost string // empty for direct traffic
 }
 
-// Sink persists a batch of clicks and reports how many were stored.
+// Sink persists a batch of clicks and reports how many were stored. A
+// click whose link no longer exists (deleted while the click was queued) is
+// skipped, not an error, and not counted as stored.
 type Sink interface {
 	InsertClicks(ctx context.Context, clicks []Click) (int, error)
 }
@@ -57,6 +60,7 @@ type Recorder struct {
 	recorded atomic.Uint64
 	dropped  atomic.Uint64
 	failed   atomic.Uint64
+	orphaned atomic.Uint64
 }
 
 // ErrClosed is returned by Close when called more than once.
@@ -140,10 +144,13 @@ func (r *Recorder) Close(ctx context.Context) error {
 	}
 }
 
-// Recorded, Dropped and Failed are monotonic counters for metrics.
+// Recorded, Dropped, Failed and Orphaned are monotonic counters for
+// metrics. Orphaned clicks were skipped by the sink because their link was
+// deleted before they were written.
 func (r *Recorder) Recorded() uint64 { return r.recorded.Load() }
 func (r *Recorder) Dropped() uint64  { return r.dropped.Load() }
 func (r *Recorder) Failed() uint64   { return r.failed.Load() }
+func (r *Recorder) Orphaned() uint64 { return r.orphaned.Load() }
 
 // Pending reports how many accepted clicks have not been written yet,
 // whether still in the queue or in the batch being assembled.
@@ -193,9 +200,12 @@ func (r *Recorder) write(batch []Click) {
 	n, err := r.sink.InsertClicks(ctx, batch)
 	r.pending.Add(-int64(len(batch)))
 	r.recorded.Add(uint64(n))
-	if err != nil {
+	switch {
+	case err != nil:
 		r.failed.Add(uint64(len(batch) - n))
 		r.log.Error("writing clicks", "batch", len(batch), "err", err)
+	case n < len(batch):
+		r.orphaned.Add(uint64(len(batch) - n))
 	}
 }
 

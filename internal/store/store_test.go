@@ -4,9 +4,12 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"io/fs"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -110,14 +113,14 @@ func TestClicksAndStats(t *testing.T) {
 
 	day := func(d int, h int) time.Time { return time.Date(2026, 3, d, h, 0, 0, 0, time.UTC) }
 	clicks := []analytics.Click{
-		{Code: "stats", At: day(1, 9), RefHost: "news.ycombinator.com"},
-		{Code: "stats", At: day(1, 23), RefHost: "news.ycombinator.com"},
-		{Code: "stats", At: day(3, 0), RefHost: ""},
-		{Code: "stats", At: day(3, 1), RefHost: "t.co"},
-		{Code: "stats", At: day(3, 2), RefHost: "news.ycombinator.com"},
-		{Code: "stats", At: day(5, 0), RefHost: "t.co"},
-		{Code: "other", At: day(3, 0), RefHost: "t.co"},
-		{Code: "gone", At: day(3, 0)}, // unknown code: skipped, not an error
+		{LinkID: l.ID, Code: "stats", At: day(1, 9), RefHost: "news.ycombinator.com"},
+		{LinkID: l.ID, Code: "stats", At: day(1, 23), RefHost: "news.ycombinator.com"},
+		{LinkID: l.ID, Code: "stats", At: day(3, 0), RefHost: ""},
+		{LinkID: l.ID, Code: "stats", At: day(3, 1), RefHost: "t.co"},
+		{LinkID: l.ID, Code: "stats", At: day(3, 2), RefHost: "news.ycombinator.com"},
+		{LinkID: l.ID, Code: "stats", At: day(5, 0), RefHost: "t.co"},
+		{LinkID: other.ID, Code: "other", At: day(3, 0), RefHost: "t.co"},
+		{LinkID: other.ID + 100, Code: "gone", At: day(3, 0)}, // no such link: skipped, not an error
 	}
 	n, err := s.InsertClicks(ctx, clicks)
 	if err != nil {
@@ -168,7 +171,7 @@ func TestDeleteCascadesToClicks(t *testing.T) {
 	s, _ := openTemp(t)
 	ctx := context.Background()
 	l := mustCreate(t, s, "bye")
-	if _, err := s.InsertClicks(ctx, []analytics.Click{{Code: "bye", At: time.Now()}}); err != nil {
+	if _, err := s.InsertClicks(ctx, []analytics.Click{{LinkID: l.ID, Code: "bye", At: time.Now()}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteLink(ctx, "bye"); err != nil {
@@ -224,7 +227,7 @@ func TestConcurrentWritesAndReads(t *testing.T) {
 	for range 8 {
 		wg.Go(func() {
 			for range 20 {
-				if _, err := s.InsertClicks(ctx, []analytics.Click{{Code: "busy", At: time.Now()}}); err != nil {
+				if _, err := s.InsertClicks(ctx, []analytics.Click{{LinkID: l.ID, Code: "busy", At: time.Now()}}); err != nil {
 					errs <- err
 					return
 				}
@@ -303,15 +306,18 @@ func BenchmarkInsertClicks(b *testing.B) {
 	}
 	defer s.Close()
 	codes := []string{"aaa", "bbb", "ccc", "ddd"}
-	for _, c := range codes {
-		if _, err := s.CreateLink(ctx, Link{Code: c, URL: "https://example.com", CreatedAt: time.Now()}); err != nil {
+	ids := make([]int64, len(codes))
+	for i, c := range codes {
+		l, err := s.CreateLink(ctx, Link{Code: c, URL: "https://example.com", CreatedAt: time.Now()})
+		if err != nil {
 			b.Fatal(err)
 		}
+		ids[i] = l.ID
 	}
 	const batch = 500
 	clicks := make([]analytics.Click, batch)
 	for i := range clicks {
-		clicks[i] = analytics.Click{Code: codes[i%len(codes)], At: time.Now(), RefHost: "news.ycombinator.com"}
+		clicks[i] = analytics.Click{LinkID: ids[i%len(ids)], Code: codes[i%len(codes)], At: time.Now(), RefHost: "news.ycombinator.com"}
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i += batch {
@@ -366,4 +372,126 @@ func mustLoadMigrations(t *testing.T) []migration {
 		t.Fatal(err)
 	}
 	return ms
+}
+
+func TestLinkIDsAreNeverReused(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	a := mustCreate(t, s, "first") // the highest id, which plain INTEGER PRIMARY KEY would hand out again
+	if err := s.DeleteLink(ctx, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if b := mustCreate(t, s, "first"); b.ID <= a.ID {
+		t.Fatalf("id %d reused after delete (new id %d)", a.ID, b.ID)
+	}
+}
+
+// TestClicksFollowLinkIDNotCode: a click still queued when its link is
+// deleted and the code re-created belongs to the old link, so it is
+// skipped rather than credited to the new one.
+func TestClicksFollowLinkIDNotCode(t *testing.T) {
+	s, _ := openTemp(t)
+	ctx := context.Background()
+	old := mustCreate(t, s, "same")
+	if err := s.DeleteLink(ctx, "same"); err != nil {
+		t.Fatal(err)
+	}
+	cur := mustCreate(t, s, "same")
+	n, err := s.InsertClicks(ctx, []analytics.Click{
+		{LinkID: old.ID, Code: "same", At: time.Now()},
+		{LinkID: old.ID, Code: "same", At: time.Now()},
+		{LinkID: cur.ID, Code: "same", At: time.Now()},
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("InsertClicks = %d, %v; want 1, nil", n, err)
+	}
+	if st, _ := s.Stats(ctx, cur.ID, time.Time{}, 5); st.Total != 1 {
+		t.Fatalf("re-created link has %d clicks, want 1", st.Total)
+	}
+}
+
+// TestMigrationToAutoincrementKeepsData opens a database created by the
+// first schema version, with links and clicks in it, and checks that the
+// table rebuild keeps every row (the old links table is dropped with
+// foreign keys off, so ON DELETE CASCADE must not fire) and that ids stop
+// being reused afterwards.
+func TestMigrationToAutoincrementKeepsData(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v1.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?"+pragmas)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1, err := fs.ReadFile(migrationFS, "migrations/0001_init.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT`,
+		string(v1),
+		`INSERT INTO schema_migrations VALUES (1, 0)`,
+		`INSERT INTO links (id, code, url, created_at) VALUES (1, 'one', 'https://a.example', 0), (2, 'two', 'https://b.example', 0), (3, 'three', 'https://c.example', 0)`,
+		`INSERT INTO clicks (link_id, clicked_at) VALUES (1, 10), (1, 11), (2, 12), (3, 13)`,
+		`DELETE FROM links WHERE id = 2`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	db.Close()
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	var ddl string
+	if err := s.r.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE name = 'links'`).Scan(&ddl); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ddl, "AUTOINCREMENT") {
+		t.Fatalf("links was not rebuilt with AUTOINCREMENT:\n%s", ddl)
+	}
+	for code, want := range map[string]struct{ id, clicks int64 }{"one": {1, 2}, "three": {3, 1}} {
+		l, err := s.GetLink(ctx, code)
+		if err != nil || l.ID != want.id {
+			t.Fatalf("GetLink(%s) = %+v, %v; want id %d", code, l, err, want.id)
+		}
+		if st, _ := s.Stats(ctx, l.ID, time.Time{}, 5); st.Total != want.clicks {
+			t.Fatalf("%s has %d clicks after migrating, want %d", code, st.Total, want.clicks)
+		}
+	}
+	rows, err := s.w.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows.Next() {
+		t.Fatal("foreign key violations after migrating")
+	}
+	rows.Close()
+	var fk int
+	if err := s.w.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk); err != nil || fk != 1 {
+		t.Fatalf("foreign_keys = %d (%v) on the write connection after migrating, want 1", fk, err)
+	}
+
+	// Deleting the highest id no longer frees it.
+	a := mustCreate(t, s, "four")
+	if a.ID != 4 {
+		t.Fatalf("first id after migrating = %d, want 4", a.ID)
+	}
+	if err := s.DeleteLink(ctx, "four"); err != nil {
+		t.Fatal(err)
+	}
+	if b := mustCreate(t, s, "five"); b.ID != 5 {
+		t.Fatalf("id after deleting the newest link = %d, want 5", b.ID)
+	}
+	// Deleting a link still cascades to its clicks.
+	if err := s.DeleteLink(ctx, "one"); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	s.r.QueryRowContext(ctx, `SELECT count(*) FROM clicks WHERE link_id = 1`).Scan(&left)
+	if left != 0 {
+		t.Fatalf("%d clicks survived deleting their link", left)
+	}
 }

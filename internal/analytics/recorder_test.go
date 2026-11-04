@@ -269,3 +269,31 @@ func TestCloseWaitsForWorkerAfterDeadline(t *testing.T) {
 		t.Fatalf("pending=%d recorded=%d failed=%d dropped=%d", r.Pending(), r.Recorded(), r.Failed(), r.Dropped())
 	}
 }
+
+// skipSink stores only clicks with a positive LinkID, the way the stores
+// skip clicks whose link has been deleted.
+type skipSink struct{ memSink }
+
+func (s *skipSink) InsertClicks(ctx context.Context, clicks []Click) (int, error) {
+	var keep []Click
+	for _, c := range clicks {
+		if c.LinkID > 0 {
+			keep = append(keep, c)
+		}
+	}
+	return s.memSink.InsertClicks(ctx, keep)
+}
+
+func TestOrphanedClicksAreCounted(t *testing.T) {
+	sink := &skipSink{}
+	r := NewRecorder(sink, Options{Buffer: 10, BatchSize: 10, FlushInterval: time.Hour})
+	r.Record(Click{LinkID: 1})
+	r.Record(Click{LinkID: 0}) // its link was deleted before the flush
+	r.Record(Click{LinkID: 2})
+	if err := r.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if r.Recorded() != 2 || r.Orphaned() != 1 || r.Failed() != 0 {
+		t.Fatalf("recorded=%d orphaned=%d failed=%d, want 2, 1, 0", r.Recorded(), r.Orphaned(), r.Failed())
+	}
+}

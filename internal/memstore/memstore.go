@@ -2,7 +2,8 @@
 // interfaces. It exists for the WebAssembly demo, where SQLite is not
 // available: the real service, HTTP handler and click recorder run on top
 // of it unchanged. It mirrors the SQLite store's semantics (unique codes,
-// cascading deletes, clicks for unknown codes skipped, second-precision
+// IDs never reused, cascading deletes, clicks for deleted links skipped,
+// second-precision
 // timestamps, stats ordering) and can be snapshotted to JSON so the browser
 // can keep its state in localStorage.
 package memstore
@@ -25,6 +26,7 @@ type Store struct {
 	mu       sync.RWMutex
 	nextID   int64
 	links    map[string]store.Link // by code
+	ids      map[int64]bool        // IDs of the links in links
 	clicks   []click
 	onChange func()
 }
@@ -38,7 +40,7 @@ type click struct {
 
 // New returns an empty store.
 func New() *Store {
-	return &Store{nextID: 1, links: make(map[string]store.Link)}
+	return &Store{nextID: 1, links: make(map[string]store.Link), ids: make(map[int64]bool)}
 }
 
 // OnChange registers fn to be called after every successful mutation,
@@ -74,6 +76,7 @@ func (s *Store) CreateLink(_ context.Context, l store.Link) (store.Link, error) 
 	l.CreatedAt = truncate(l.CreatedAt)
 	l.ExpiresAt = truncate(l.ExpiresAt)
 	s.links[l.Code] = l
+	s.ids[l.ID] = true
 	s.mu.Unlock()
 	s.changed()
 	return l, nil
@@ -99,23 +102,25 @@ func (s *Store) DeleteLink(_ context.Context, code string) error {
 		return store.ErrNotFound
 	}
 	delete(s.links, code)
+	delete(s.ids, l.ID)
 	s.clicks = slices.DeleteFunc(s.clicks, func(c click) bool { return c.LinkID == l.ID })
 	s.mu.Unlock()
 	s.changed()
 	return nil
 }
 
-// InsertClicks stores a batch of clicks, skipping codes that no longer
-// exist, and reports how many were stored. It implements analytics.Sink.
+// InsertClicks stores a batch of clicks against their LinkID, skipping
+// clicks whose link no longer exists, and reports how many were stored. As
+// IDs are never reused, a click for a deleted link is never credited to a
+// newer link with the same code. It implements analytics.Sink.
 func (s *Store) InsertClicks(_ context.Context, clicks []analytics.Click) (int, error) {
 	s.mu.Lock()
 	n := 0
 	for _, c := range clicks {
-		l, ok := s.links[c.Code]
-		if !ok {
+		if !s.ids[c.LinkID] {
 			continue
 		}
-		s.clicks = append(s.clicks, click{LinkID: l.ID, At: c.At.Unix(), RefHost: c.RefHost})
+		s.clicks = append(s.clicks, click{LinkID: c.LinkID, At: c.At.Unix(), RefHost: c.RefHost})
 		n++
 	}
 	s.mu.Unlock()
@@ -241,6 +246,7 @@ func (s *Store) Restore(data []byte) error {
 	s.mu.Lock()
 	s.nextID = max(next, 1)
 	s.links = links
+	s.ids = ids
 	s.clicks = clicks
 	s.mu.Unlock()
 	return nil

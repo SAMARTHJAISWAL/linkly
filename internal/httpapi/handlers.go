@@ -175,6 +175,10 @@ func (s *Server) handleRedirect(w http.ResponseWriter, r *http.Request) {
 	// not clicks.
 	if r.Method == http.MethodGet {
 		s.clicks.Record(analytics.Click{
+			// The ID, not the code, decides which link the click is stored
+			// against: the code may be deleted and re-created before the
+			// click is written.
+			LinkID:  link.ID,
 			Code:    link.Code,
 			At:      s.now().UTC(),
 			RefHost: analytics.RefererHost(r.Referer()),

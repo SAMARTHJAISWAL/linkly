@@ -57,7 +57,7 @@ func TestCreateGetDelete(t *testing.T) {
 		t.Fatalf("GetLink(missing) err = %v", err)
 	}
 
-	if _, err := s.InsertClicks(ctx, []analytics.Click{{Code: "abc", At: day0}}); err != nil {
+	if _, err := s.InsertClicks(ctx, []analytics.Click{{LinkID: a.ID, Code: "abc", At: day0}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteLink(ctx, "abc"); err != nil {
@@ -76,13 +76,13 @@ func TestCreateGetDelete(t *testing.T) {
 	}
 }
 
-func TestInsertClicksSkipsUnknownCodes(t *testing.T) {
+func TestInsertClicksSkipsUnknownLinks(t *testing.T) {
 	s := New()
-	mustCreate(t, s, "abc")
+	l := mustCreate(t, s, "abc")
 	n, err := s.InsertClicks(context.Background(), []analytics.Click{
-		{Code: "abc", At: day0},
-		{Code: "gone", At: day0},
-		{Code: "abc", At: day0, RefHost: "news.example"},
+		{LinkID: l.ID, Code: "abc", At: day0},
+		{LinkID: l.ID + 1, Code: "gone", At: day0},
+		{LinkID: l.ID, Code: "abc", At: day0, RefHost: "news.example"},
 	})
 	if err != nil || n != 2 {
 		t.Fatalf("InsertClicks = %d, %v; want 2, nil", n, err)
@@ -97,14 +97,14 @@ func TestStats(t *testing.T) {
 
 	at := func(days int) time.Time { return day0.AddDate(0, 0, days) }
 	clicks := []analytics.Click{
-		{Code: "abc", At: at(-40)}, // before the window: counted in total and referrers only
-		{Code: "abc", At: at(-1), RefHost: "b.example"},
-		{Code: "abc", At: at(0), RefHost: "a.example"},
-		{Code: "abc", At: at(0), RefHost: "b.example"},
-		{Code: "abc", At: at(0)},
-		{Code: "abc", At: at(0), RefHost: "a.example"},
-		{Code: "abc", At: at(0), RefHost: "c.example"},
-		{Code: "xyz", At: at(0), RefHost: "a.example"},
+		{LinkID: l.ID, Code: "abc", At: at(-40)}, // before the window: counted in total and referrers only
+		{LinkID: l.ID, Code: "abc", At: at(-1), RefHost: "b.example"},
+		{LinkID: l.ID, Code: "abc", At: at(0), RefHost: "a.example"},
+		{LinkID: l.ID, Code: "abc", At: at(0), RefHost: "b.example"},
+		{LinkID: l.ID, Code: "abc", At: at(0)},
+		{LinkID: l.ID, Code: "abc", At: at(0), RefHost: "a.example"},
+		{LinkID: l.ID, Code: "abc", At: at(0), RefHost: "c.example"},
+		{LinkID: other.ID, Code: "xyz", At: at(0), RefHost: "a.example"},
 	}
 	if _, err := s.InsertClicks(ctx, clicks); err != nil {
 		t.Fatal(err)
@@ -143,12 +143,12 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	var changes atomic.Int32
 	s.OnChange(func() { changes.Add(1) })
 
-	mustCreate(t, s, "abc")
+	abc := mustCreate(t, s, "abc")
 	exp := day0.Add(time.Hour)
 	if _, err := s.CreateLink(ctx, store.Link{Code: "tmp", URL: "https://t.example", CreatedAt: day0, ExpiresAt: exp}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.InsertClicks(ctx, []analytics.Click{{Code: "abc", At: day0, RefHost: "r.example"}}); err != nil {
+	if _, err := s.InsertClicks(ctx, []analytics.Click{{LinkID: abc.ID, Code: "abc", At: day0, RefHost: "r.example"}}); err != nil {
 		t.Fatal(err)
 	}
 	if got := changes.Load(); got != 3 {
@@ -250,5 +250,31 @@ func TestWithRealServer(t *testing.T) {
 	}
 	if w := do("GET", "/api/links/demo1/qr.png", ""); w.Code != http.StatusOK || w.Header().Get("Content-Type") != "image/png" {
 		t.Fatalf("qr: %d %v", w.Code, w.Header())
+	}
+}
+
+// TestClicksFollowLinkIDNotCode mirrors the SQLite store's test: a click
+// for a deleted link is not credited to a new link with the same code.
+func TestClicksFollowLinkIDNotCode(t *testing.T) {
+	ctx := context.Background()
+	s := New()
+	old := mustCreate(t, s, "same")
+	if err := s.DeleteLink(ctx, "same"); err != nil {
+		t.Fatal(err)
+	}
+	cur := mustCreate(t, s, "same")
+	if cur.ID <= old.ID {
+		t.Fatalf("id %d reused", old.ID)
+	}
+	n, err := s.InsertClicks(ctx, []analytics.Click{
+		{LinkID: old.ID, Code: "same", At: day0},
+		{LinkID: old.ID, Code: "same", At: day0},
+		{LinkID: cur.ID, Code: "same", At: day0},
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("InsertClicks = %d, %v; want 1, nil", n, err)
+	}
+	if st, _ := s.Stats(ctx, cur.ID, time.Time{}, 5); st.Total != 1 {
+		t.Fatalf("re-created link has %d clicks, want 1", st.Total)
 	}
 }

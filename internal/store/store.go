@@ -28,8 +28,8 @@ import (
 type Store struct {
 	w, r *sql.DB
 
-	insertLink, deleteLink, linkID, insertClicks *sql.Stmt
-	getLink, countClicks, dailyClicks, referrer  *sql.Stmt
+	insertLink, deleteLink, linkExists, insertClicks *sql.Stmt
+	getLink, countClicks, dailyClicks, referrer      *sql.Stmt
 }
 
 // pragmas are applied in order when each connection opens. busy_timeout
@@ -84,7 +84,7 @@ func (s *Store) prepare(ctx context.Context) error {
 		{s.w, &s.deleteLink, `DELETE FROM links WHERE code = ?`},
 		// Looked up on the write connection, inside the click transaction,
 		// so a concurrent delete cannot slip in between lookup and insert.
-		{s.w, &s.linkID, `SELECT id FROM links WHERE code = ?`},
+		{s.w, &s.linkExists, `SELECT 1 FROM links WHERE id = ?`},
 		{s.w, &s.insertClicks, insertClicksSQL(clicksPerInsert)},
 		{s.r, &s.getLink, `SELECT id, code, url, created_at, expires_at FROM links WHERE code = ?`},
 		{s.r, &s.countClicks, `SELECT count(*) FROM clicks WHERE link_id = ?`},
@@ -108,7 +108,7 @@ func (s *Store) prepare(ctx context.Context) error {
 // Close releases the statements and both pools.
 func (s *Store) Close() error {
 	for _, st := range []*sql.Stmt{
-		s.insertLink, s.deleteLink, s.linkID, s.insertClicks,
+		s.insertLink, s.deleteLink, s.linkExists, s.insertClicks,
 		s.getLink, s.countClicks, s.dailyClicks, s.referrer,
 	} {
 		if st != nil {
@@ -184,13 +184,16 @@ func (s *Store) DeleteLink(ctx context.Context, code string) error {
 const clicksPerInsert = 200
 
 // InsertClicks writes a batch of clicks in one transaction and reports how
-// many were stored. Clicks for codes that no longer exist (deleted while
-// the click sat in the queue) are skipped rather than failing the batch.
-// It implements analytics.Sink.
+// many were stored. Each click is stored against its LinkID, the link its
+// redirect resolved, never looked up by code: the code may have been
+// deleted and re-created while the click sat in the queue, and link ids
+// are never reused (AUTOINCREMENT), so such a click is skipped rather than
+// credited to the new link. Skipping is not an error. It implements
+// analytics.Sink.
 //
-// Each distinct code is resolved to its link ID once, then rows are written
-// with multi-row INSERTs: per-statement overhead, not SQLite itself, is
-// what limits a row-at-a-time loop.
+// Each distinct link ID is checked once, then rows are written with
+// multi-row INSERTs: per-statement overhead, not SQLite itself, is what
+// limits a row-at-a-time loop.
 func (s *Store) InsertClicks(ctx context.Context, clicks []analytics.Click) (int, error) {
 	tx, err := s.w.BeginTx(ctx, nil)
 	if err != nil {
@@ -198,23 +201,25 @@ func (s *Store) InsertClicks(ctx context.Context, clicks []analytics.Click) (int
 	}
 	defer tx.Rollback()
 
-	lookup := tx.StmtContext(ctx, s.linkID)
-	ids := make(map[string]int64)
+	exists := tx.StmtContext(ctx, s.linkExists)
+	live := make(map[int64]bool)
 	args := make([]any, 0, 3*len(clicks))
 	for _, c := range clicks {
-		id, seen := ids[c.Code]
+		ok, seen := live[c.LinkID]
 		if !seen {
-			err := lookup.QueryRowContext(ctx, c.Code).Scan(&id)
+			var one int
+			err := exists.QueryRowContext(ctx, c.LinkID).Scan(&one)
 			switch {
 			case errors.Is(err, sql.ErrNoRows):
-				id = 0
 			case err != nil:
 				return 0, err
+			default:
+				ok = true
 			}
-			ids[c.Code] = id
+			live[c.LinkID] = ok
 		}
-		if id != 0 {
-			args = append(args, id, c.At.Unix(), c.RefHost)
+		if ok {
+			args = append(args, c.LinkID, c.At.Unix(), c.RefHost)
 		}
 	}
 

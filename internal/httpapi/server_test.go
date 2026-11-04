@@ -41,6 +41,7 @@ type env struct {
 }
 
 type envOpts struct {
+	flushEvery time.Duration // click flush interval; default 5ms
 	adminToken string
 	rate       float64
 	burst      int
@@ -57,7 +58,10 @@ func newEnv(t *testing.T, o envOpts) *env {
 		t.Fatal(err)
 	}
 	clk := &clock{t: time.Now().UTC()}
-	rec := analytics.NewRecorder(st, analytics.Options{Buffer: 1000, BatchSize: 100, FlushInterval: 5 * time.Millisecond})
+	if o.flushEvery == 0 {
+		o.flushEvery = 5 * time.Millisecond
+	}
+	rec := analytics.NewRecorder(st, analytics.Options{Buffer: 1000, BatchSize: 100, FlushInterval: o.flushEvery})
 	var lim *ratelimit.Limiter
 	if o.rate > 0 {
 		lim = ratelimit.New(o.rate, o.burst, time.Minute, ratelimit.WithClock(clk.Now))
@@ -771,5 +775,27 @@ func TestQRCacheIsBounded(t *testing.T) {
 	}
 	if _, ok := c.get(qrKey{"c", 3}); ok {
 		t.Fatal("least recently used entry was kept")
+	}
+}
+
+// TestQueuedClicksStayWithTheirLink: clicks still queued when a link is
+// deleted and its alias re-created must not be credited to the new link.
+func TestQueuedClicksStayWithTheirLink(t *testing.T) {
+	e := newEnv(t, envOpts{flushEvery: time.Hour, adminToken: "correct-horse-battery"})
+	e.create(map[string]any{"url": "https://old.example", "alias": "promo"})
+	for range 3 {
+		wantStatus(t, e.do("GET", "/promo", nil), http.StatusFound)
+	}
+	wantStatus(t, e.do("DELETE", "/api/links/promo", nil, "Authorization", "Bearer correct-horse-battery"), http.StatusNoContent)
+	e.create(map[string]any{"url": "https://new.example", "alias": "promo"})
+
+	if err := e.recorder.Close(context.Background()); err != nil { // flush the queue
+		t.Fatal(err)
+	}
+	if s := e.stats("promo"); s.TotalClicks != 0 {
+		t.Fatalf("re-created link inherited %d clicks of the deleted one", s.TotalClicks)
+	}
+	if e.recorder.Orphaned() != 3 {
+		t.Fatalf("orphaned = %d, want 3", e.recorder.Orphaned())
 	}
 }

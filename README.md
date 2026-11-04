@@ -152,7 +152,9 @@ GET /{code} ──► Recorder.Record(click)        non-blocking: select { case 
         │
         ▼
   store.InsertClicks: one transaction per batch
-    · resolve each distinct code to a link id once (deleted links are skipped)
+    · each click carries the link id its redirect resolved; ids are never reused
+      (AUTOINCREMENT), so a link deleted while its clicks were queued just has
+      them skipped (linkly_clicks_orphaned_total), even if its code is re-created
     · multi-row INSERT ... VALUES (?,?,?),(?,?,?),...
 ```
 

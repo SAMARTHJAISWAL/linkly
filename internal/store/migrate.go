@@ -93,10 +93,31 @@ func migrate(ctx context.Context, db *sql.DB) error {
 // busy_timeout inside each attempt) that is well over a minute of waiting.
 const migrateAttempts = 12
 
-func migrateOnce(ctx context.Context, db *sql.DB, ms []migration) error {
+func migrateOnce(ctx context.Context, db *sql.DB, ms []migration) (err error) {
+	// Foreign keys are switched off for the migration, as SQLite's
+	// procedure for rebuilding a table requires (dropping a referenced table
+	// would otherwise cascade), and checked before committing. The pragma
+	// is a no-op inside a transaction and is per connection, so a
+	// connection is pinned for the whole sequence.
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return err
+	}
+	defer func() {
+		// Background: this must run even if ctx is done, or the pooled
+		// connection would keep foreign keys off.
+		if _, ferr := conn.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`); ferr != nil {
+			err = errors.Join(err, ferr)
+		}
+	}()
+
 	// The write pool opens transactions with BEGIN IMMEDIATE (_txlock), so
 	// the write lock is taken before the version is read.
-	tx, err := db.BeginTx(ctx, nil)
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -123,6 +144,17 @@ func migrateOnce(ctx context.Context, db *sql.DB, ms []migration) error {
 			m.version, time.Now().Unix()); err != nil {
 			return fmt.Errorf("recording %s: %w", m.name, err)
 		}
+	}
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return err
+	}
+	violation := rows.Next()
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	if violation {
+		return errors.New("migrations left foreign key violations")
 	}
 	return tx.Commit()
 }

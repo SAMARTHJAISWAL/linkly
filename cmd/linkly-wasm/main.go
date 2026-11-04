@@ -356,6 +356,8 @@ func registerMetrics(reg *metrics.Registry, rec *analytics.Recorder, lim *rateli
 		func() float64 { return float64(rec.Dropped()) })
 	reg.NewCounterFunc("linkly_clicks_failed_total", "Clicks lost to database write errors.",
 		func() float64 { return float64(rec.Failed()) })
+	reg.NewCounterFunc("linkly_clicks_orphaned_total", "Clicks discarded because their link was deleted before they were written.",
+		func() float64 { return float64(rec.Orphaned()) })
 	reg.NewGaugeFunc("linkly_click_queue_depth", "Clicks waiting to be written.",
 		func() float64 { return float64(rec.Pending()) })
 	reg.NewGaugeFunc("linkly_rate_limit_buckets", "Clients currently tracked by the rate limiter.",
