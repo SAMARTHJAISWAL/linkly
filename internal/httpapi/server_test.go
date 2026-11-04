@@ -539,3 +539,53 @@ func BenchmarkRedirect(b *testing.B) {
 		}
 	})
 }
+
+// TestCreateRejectsTrailingJSON: anything but whitespace after the JSON
+// object is an error, including a stray closing brace or bracket, which
+// Decoder.More does not report.
+func TestCreateRejectsTrailingJSON(t *testing.T) {
+	e := newEnv(t, envOpts{})
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"extra brace", `{"url":"https://example.com"}}`, 400},
+		{"extra bracket", `{"url":"https://example.com"}]`, 400},
+		{"second object", `{"url":"https://example.com"} {}`, 400},
+		{"second value", `{"url":"https://example.com"} 1`, 400},
+		{"garbage", `{"url":"https://example.com"}x`, 400},
+		{"trailing whitespace", "{\"url\":\"https://example.com\"}\n\t ", 201},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wantStatus(t, e.do("POST", "/api/links", tt.body), tt.want)
+		})
+	}
+}
+
+// TestCreateContentType: the media type is compared exactly and
+// case-insensitively, with parameters allowed.
+func TestCreateContentType(t *testing.T) {
+	e := newEnv(t, envOpts{})
+	body := `{"url":"https://example.com"}`
+	tests := []struct {
+		ctype string
+		want  int
+	}{
+		{"application/json", 201},
+		{"application/json; charset=utf-8", 201},
+		{"Application/JSON", 201},
+		{"APPLICATION/JSON ; Charset=UTF-8", 201},
+		{"application/jsonl", 415},
+		{"application/json-seq", 415},
+		{"application/jsonx; charset=utf-8", 415},
+		{"text/plain", 415},
+		{"application/json; charset", 415}, // malformed parameter
+	}
+	for _, tt := range tests {
+		t.Run(tt.ctype, func(t *testing.T) {
+			wantStatus(t, e.do("POST", "/api/links", body, "Content-Type", tt.ctype), tt.want)
+		})
+	}
+}

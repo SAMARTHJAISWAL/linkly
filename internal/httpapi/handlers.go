@@ -6,6 +6,8 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
@@ -80,24 +82,30 @@ func (s *Server) toResponse(l store.Link) linkResponse {
 
 // handleCreate implements POST /api/links.
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
-	if ct := r.Header.Get("Content-Type"); ct != "" && !strings.HasPrefix(ct, "application/json") {
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
 		writeError(w, r, http.StatusUnsupportedMediaType, "Content-Type must be application/json", "")
 		return
 	}
 	var req createRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	err := dec.Decode(&req)
+	if err == nil {
+		// Exactly one value: the next read must hit EOF. Decoder.More is not
+		// enough, as it reports false for a stray '}' or ']'.
+		if err = dec.Decode(&struct{}{}); err == io.EOF {
+			err = nil
+		} else if err == nil {
+			err = errors.New("trailing data")
+		}
+	}
+	if err != nil {
 		var mbe *http.MaxBytesError
 		if errors.As(err, &mbe) {
 			writeError(w, r, http.StatusRequestEntityTooLarge, "request body too large", "")
 			return
 		}
 		writeError(w, r, http.StatusBadRequest, "invalid JSON body: "+err.Error(), "")
-		return
-	}
-	if dec.More() {
-		writeError(w, r, http.StatusBadRequest, "invalid JSON body: trailing data", "")
 		return
 	}
 
@@ -113,6 +121,17 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	resp := s.toResponse(link)
 	w.Header().Set("Location", "/api/links/"+link.Code)
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+// isJSONContentType reports whether a Content-Type header names exactly
+// application/json (case-insensitively, parameters allowed). An absent
+// header is accepted for clients that do not set one.
+func isJSONContentType(ct string) bool {
+	if ct == "" {
+		return true
+	}
+	mt, _, err := mime.ParseMediaType(ct)
+	return err == nil && mt == "application/json"
 }
 
 // handleRedirect implements GET /{code}. It is the hot path: one indexed
