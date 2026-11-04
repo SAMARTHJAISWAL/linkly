@@ -1,6 +1,8 @@
 # Build output
 /bin/
 /dist/
+/dist-demo/
+/dist-demo-serve/
 /linkly
 
 # SQLite databases and WAL files

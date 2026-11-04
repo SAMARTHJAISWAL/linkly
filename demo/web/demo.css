@@ -1,0 +1,57 @@
+/* Additions for the live demo; the real UI's style.css is used unchanged. */
+
+.demo-banner {
+  background: var(--accent-soft);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  text-align: center;
+  position: relative;
+  z-index: 11; /* stays visible above the redirect overlay */
+}
+
+.demo-banner a { font-weight: 550; }
+
+.demo-status { color: var(--text-2); white-space: nowrap; }
+
+.demo-status.demo-failed { color: var(--error); white-space: normal; }
+
+.demo-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  background: var(--bg);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 15vh 16px 16px;
+}
+
+.demo-overlay-card { max-width: 520px; width: 100%; }
+
+.demo-overlay-card h1 { font-size: 1.4rem; margin-top: 0; }
+
+.demo-dialog {
+  max-width: min(720px, calc(100vw - 32px));
+  width: 100%;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.demo-dialog::backdrop { background: rgb(0 0 0 / 0.4); }
+
+.demo-dialog pre {
+  font: 0.8rem/1.45 var(--mono);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre;
+}
