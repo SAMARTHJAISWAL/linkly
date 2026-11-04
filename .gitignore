@@ -1,0 +1,18 @@
+# Build output
+/bin/
+/dist/
+/linkly
+
+# SQLite databases and WAL files
+*.db
+*.db-shm
+*.db-wal
+
+# Test and profiling artifacts
+coverage.out
+*.test
+*.prof
+
+# Local environment
+.env
+.DS_Store
