@@ -105,6 +105,17 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429':
+          description: |
+            Too many wrong admin tokens from this client (5 at once, then one
+            per minute). Every DELETE is refused, whatever its token, until
+            `Retry-After` seconds have passed.
+          headers:
+            Retry-After:
+              schema: { type: integer, minimum: 1 }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/links/{code}/qr.png:
     parameters:

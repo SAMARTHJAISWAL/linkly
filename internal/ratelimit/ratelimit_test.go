@@ -228,3 +228,42 @@ func BenchmarkAllow(b *testing.B) {
 		}
 	})
 }
+
+func TestPeekDoesNotSpend(t *testing.T) {
+	clk := newFakeClock()
+	l := New(1, 2, time.Minute, WithClock(clk.Now))
+	for range 3 {
+		if ok, _ := l.Peek("a"); !ok {
+			t.Fatal("Peek on a fresh key should allow")
+		}
+	}
+	if l.Len() != 0 {
+		t.Fatalf("Peek created %d buckets", l.Len())
+	}
+	l.Allow("a")
+	l.Allow("a")
+	ok, wait := l.Peek("a")
+	if ok || wait != time.Second {
+		t.Fatalf("Peek on an empty bucket = %v, %v; want false, 1s", ok, wait)
+	}
+	clk.Advance(time.Second)
+	if ok, _ := l.Peek("a"); !ok {
+		t.Fatal("Peek should see the refilled token")
+	}
+	if ok, _ := l.Allow("a"); !ok {
+		t.Fatal("Peek must not have spent the refilled token")
+	}
+}
+
+func TestAutoSweep(t *testing.T) {
+	clk := newFakeClock()
+	l := New(1, 1, time.Minute, WithClock(clk.Now), WithAutoSweep(time.Minute))
+	for i := range 100 {
+		l.Allow(fmt.Sprint(i))
+	}
+	clk.Advance(2 * time.Minute)
+	l.Allow("fresh") // sweeps the idle buckets inline
+	if n := l.Len(); n != 1 {
+		t.Fatalf("Len after auto-sweep = %d, want 1", n)
+	}
+}

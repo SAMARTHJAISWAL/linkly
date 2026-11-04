@@ -29,7 +29,7 @@ func TestLoadOverrides(t *testing.T) {
 		"LINKLY_ADDR":                 "127.0.0.1:9000",
 		"LINKLY_DB":                   "/data/x.db",
 		"LINKLY_BASE_URL":             "https://Sho.rt/",
-		"LINKLY_ADMIN_TOKEN":          "s3cret",
+		"LINKLY_ADMIN_TOKEN":          "  0123456789abcdef\n",
 		"LINKLY_TRUST_PROXY":          "true",
 		"LINKLY_RATE_LIMIT":           "2.5",
 		"LINKLY_RATE_BURST":           "3",
@@ -45,7 +45,7 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	want := Config{
 		Addr: "127.0.0.1:9000", DBPath: "/data/x.db", BaseURL: "https://Sho.rt",
-		AdminToken: "s3cret", TrustProxy: true, RateLimit: 2.5, RateBurst: 3,
+		AdminToken: "0123456789abcdef", TrustProxy: true, RateLimit: 2.5, RateBurst: 3,
 		RateIdleTTL: time.Minute, ClickBuffer: 10, ClickBatch: 5,
 		ClickFlushInterval: 250 * time.Millisecond, ShutdownTimeout: 3 * time.Second,
 		LogLevel: slog.LevelDebug,
@@ -77,6 +77,9 @@ func TestLoadErrors(t *testing.T) {
 		{"base url trailing dot", map[string]string{"LINKLY_BASE_URL": "https://sho.rt."}, []string{"LINKLY_BASE_URL", "trailing dot"}},
 		{"base url trailing dot with port", map[string]string{"LINKLY_BASE_URL": "https://sho.rt.:8443"}, []string{"LINKLY_BASE_URL", "trailing dot"}},
 		{"base url non-ASCII host", map[string]string{"LINKLY_BASE_URL": "https://exämple.com"}, []string{"LINKLY_BASE_URL", "ASCII"}},
+		{"one-char admin token", map[string]string{"LINKLY_ADMIN_TOKEN": "x"}, []string{"LINKLY_ADMIN_TOKEN", "16"}},
+		{"blank admin token", map[string]string{"LINKLY_ADMIN_TOKEN": " "}, []string{"LINKLY_ADMIN_TOKEN", "16"}},
+		{"15-byte admin token", map[string]string{"LINKLY_ADMIN_TOKEN": " 0123456789abcde "}, []string{"LINKLY_ADMIN_TOKEN", "16"}},
 		{"zero burst", map[string]string{"LINKLY_RATE_BURST": "0"}, []string{"LINKLY_RATE_BURST"}},
 		{"bad level", map[string]string{"LINKLY_LOG_LEVEL": "loud"}, []string{"LINKLY_LOG_LEVEL"}},
 		{

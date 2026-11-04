@@ -19,7 +19,8 @@ type Config struct {
 	DBPath  string // LINKLY_DB: path to the SQLite database file.
 	BaseURL string // LINKLY_BASE_URL: public origin used to build short URLs, without a trailing slash.
 
-	// AdminToken (LINKLY_ADMIN_TOKEN) protects DELETE. Empty disables deletion.
+	// AdminToken (LINKLY_ADMIN_TOKEN) protects DELETE. Empty disables
+	// deletion; otherwise it must be at least MinAdminTokenLen bytes.
 	AdminToken string
 
 	// TrustProxy (LINKLY_TRUST_PROXY) makes the client IP come from
@@ -37,6 +38,11 @@ type Config struct {
 	ShutdownTimeout time.Duration // LINKLY_SHUTDOWN_TIMEOUT: budget for draining requests and clicks.
 	LogLevel        slog.Level    // LINKLY_LOG_LEVEL: debug, info, warn or error.
 }
+
+// MinAdminTokenLen is the shortest LINKLY_ADMIN_TOKEN accepted, after
+// trimming whitespace. Failed attempts are also throttled per client, but a
+// token short enough to guess makes that the only line of defence.
+const MinAdminTokenLen = 16
 
 // Default returns the configuration used when no variables are set.
 func Default() Config {
@@ -80,6 +86,12 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
+	// Header values reach handlers with surrounding whitespace removed, so a
+	// token with a stray newline from a secrets file could never match.
+	c.AdminToken = strings.TrimSpace(c.AdminToken)
+	if getenv("LINKLY_ADMIN_TOKEN") != "" && len(c.AdminToken) < MinAdminTokenLen {
+		p.errs = append(p.errs, fmt.Errorf("LINKLY_ADMIN_TOKEN must be at least %d bytes (try: openssl rand -hex 32)", MinAdminTokenLen))
+	}
 	p.errs = append(p.errs, c.validate()...)
 	if err := errors.Join(p.errs...); err != nil {
 		return Config{}, err

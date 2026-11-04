@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/SAMARTHJAISWAL/linkly/internal/analytics"
+	"github.com/SAMARTHJAISWAL/linkly/internal/ratelimit"
 	"github.com/SAMARTHJAISWAL/linkly/internal/service"
 	"github.com/SAMARTHJAISWAL/linkly/internal/store"
 	qrcode "github.com/skip2/go-qrcode"
@@ -255,7 +256,18 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, http.StatusForbidden, "deletion is disabled: LINKLY_ADMIN_TOKEN is not set", "")
 		return
 	}
+	// Clients that keep presenting wrong tokens are refused before the
+	// token is even checked, so guessing gets authFailBurst tries and then
+	// one per minute, and a blocked guesser cannot tell a hit from a miss.
+	key := clientKey(r, s.trustProxy)
+	if ok, wait := s.authFails.Peek(key); !ok {
+		s.m.authThrottled.Inc()
+		w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(wait)))
+		writeError(w, r, http.StatusTooManyRequests, "too many failed authentication attempts; retry later", "")
+		return
+	}
 	if !s.authorized(r) {
+		s.authFails.Allow(key)
 		w.Header().Set("WWW-Authenticate", `Bearer realm="linkly"`)
 		writeError(w, r, http.StatusUnauthorized, "missing or invalid admin token", "")
 		return

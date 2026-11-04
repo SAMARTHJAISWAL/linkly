@@ -677,3 +677,41 @@ func TestCreateRefusesNonASCIIHost(t *testing.T) {
 		wantStatus(t, resp, http.StatusBadRequest)
 	}
 }
+
+// TestDeleteThrottlesFailedAuth: after authFailBurst wrong tokens a client
+// is refused with 429, whatever token it sends, until a failure's worth of
+// time has passed. Other clients are unaffected.
+func TestDeleteThrottlesFailedAuth(t *testing.T) {
+	e := newEnv(t, envOpts{adminToken: "correct-horse-battery", trustProxy: true})
+	link := e.create(map[string]any{"url": "https://example.com"})
+	path := "/api/links/" + link.Code
+	attacker := []string{"X-Forwarded-For", "203.0.113.9"}
+	bad := append([]string{"Authorization", "Bearer guess"}, attacker...)
+
+	for i := range authFailBurst {
+		if resp := e.do("DELETE", path, nil, bad...); resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status %d, want 401", i+1, resp.StatusCode)
+		}
+	}
+	resp := e.do("DELETE", path, nil, bad...)
+	wantStatus(t, resp, http.StatusTooManyRequests)
+	if ra := resp.Header.Get("Retry-After"); ra != "60" {
+		t.Fatalf("Retry-After = %q, want 60", ra)
+	}
+	// Even the right token is refused while blocked: a guesser learns nothing.
+	good := append([]string{"Authorization", "Bearer correct-horse-battery"}, attacker...)
+	wantStatus(t, e.do("DELETE", path, nil, good...), http.StatusTooManyRequests)
+
+	// Another client is not affected.
+	other := e.create(map[string]any{"url": "https://example.org"})
+	wantStatus(t, e.do("DELETE", "/api/links/"+other.Code, nil,
+		"Authorization", "Bearer correct-horse-battery", "X-Forwarded-For", "198.51.100.7"), http.StatusNoContent)
+
+	// One failure refills per minute.
+	e.clock.Advance(time.Minute)
+	wantStatus(t, e.do("DELETE", path, nil, good...), http.StatusNoContent)
+
+	if got := scrape(t, e); !strings.Contains(got, "linkly_auth_throttled_total 2") {
+		t.Fatalf("metrics missing throttled count:\n%s", got)
+	}
+}

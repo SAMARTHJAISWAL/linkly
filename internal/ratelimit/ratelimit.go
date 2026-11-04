@@ -19,8 +19,11 @@ type Limiter struct {
 	ttl   time.Duration
 	now   func() time.Time
 
-	mu      sync.Mutex
-	buckets map[string]*bucket
+	sweepEvery time.Duration // >0: Allow sweeps inline this often (WithAutoSweep)
+
+	mu        sync.Mutex
+	buckets   map[string]*bucket
+	lastSweep time.Time
 }
 
 type bucket struct {
@@ -34,6 +37,13 @@ type Option func(*Limiter)
 // WithClock replaces time.Now, which lets tests control refill timing.
 func WithClock(now func() time.Time) Option {
 	return func(l *Limiter) { l.now = now }
+}
+
+// WithAutoSweep makes Allow evict idle buckets itself, at most once per
+// interval, for limiters that have no goroutine running Run. Memory then
+// stays bounded without a lifecycle to manage.
+func WithAutoSweep(interval time.Duration) Option {
+	return func(l *Limiter) { l.sweepEvery = interval }
 }
 
 // New returns a limiter allowing rate requests per second with bursts of
@@ -70,6 +80,11 @@ func (l *Limiter) Allow(key string) (ok bool, retryAfter time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	if l.sweepEvery > 0 && now.Sub(l.lastSweep) >= l.sweepEvery {
+		l.sweepLocked(now)
+		l.lastSweep = now
+	}
+
 	b, found := l.buckets[key]
 	if !found {
 		b = &bucket{tokens: l.burst, last: now}
@@ -83,21 +98,51 @@ func (l *Limiter) Allow(key string) (ok bool, retryAfter time.Duration) {
 		b.tokens--
 		return true, 0
 	}
-	if l.rate <= 0 {
-		return false, time.Duration(math.MaxInt64)
+	return false, l.wait(b.tokens)
+}
+
+// Peek reports what Allow would answer for key without spending a token
+// or creating a bucket.
+func (l *Limiter) Peek(key string) (ok bool, retryAfter time.Duration) {
+	now := l.now()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	b, found := l.buckets[key]
+	if !found {
+		return l.burst >= 1, 0
 	}
-	wait := time.Duration((1 - b.tokens) / l.rate * float64(time.Second))
-	return false, wait
+	tokens := b.tokens
+	if elapsed := now.Sub(b.last); elapsed > 0 {
+		tokens = math.Min(l.burst, tokens+elapsed.Seconds()*l.rate)
+	}
+	if tokens >= 1 {
+		return true, 0
+	}
+	return false, l.wait(tokens)
+}
+
+// wait is how long a bucket holding tokens (< 1) needs to earn one.
+func (l *Limiter) wait(tokens float64) time.Duration {
+	if l.rate <= 0 {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration((1 - tokens) / l.rate * float64(time.Second))
 }
 
 // Sweep evicts buckets that have been idle for longer than the TTL and
 // reports how many were removed.
 func (l *Limiter) Sweep() int {
-	cutoff := l.now().Add(-l.ttl)
+	now := l.now()
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	return l.sweepLocked(now)
+}
 
+func (l *Limiter) sweepLocked(now time.Time) int {
+	cutoff := now.Add(-l.ttl)
 	n := 0
 	for k, b := range l.buckets {
 		if b.last.Before(cutoff) {

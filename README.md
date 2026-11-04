@@ -21,7 +21,7 @@ Redirects take one indexed read. The redirect handler queues the click and retur
 - **Analytics.** Each link reports its total clicks, clicks per day for the last 30 days, and its top 10 referring hosts.
 - **QR codes.** A PNG for any short link, 64 to 1024 px.
 - **Rate limiting.** A token bucket per client limits link creation. Idle buckets are evicted, `X-Forwarded-For` is used only when you opt in, and refused requests get a `429` with `Retry-After`.
-- **Admin delete.** `DELETE` requires a bearer token, compared in constant time. Deletion is disabled until a token is configured.
+- **Admin delete.** `DELETE` requires a bearer token of at least 16 bytes, compared in constant time. Deletion is disabled until a token is configured. After 5 wrong tokens a client gets `429` (with `Retry-After`) for every `DELETE`, right token or not, and earns one more attempt per minute.
 - **Operations.** `/healthz` checks the database. `/metrics` serves the Prometheus text format. Logs are structured JSON (`log/slog`) with request IDs. The server recovers from handler panics, sets timeouts on the `http.Server`, and shuts down gracefully, flushing queued clicks first.
 - **Web UI.** The UI needs no framework and no build step. It is responsive, follows the system's dark mode, and runs under a strict Content-Security-Policy.
 
@@ -64,7 +64,7 @@ The full contract is in [`openapi.yaml`](openapi.yaml), which validates with `op
 | `GET /{code}` | Redirect | `302` + `Location` | `404` unknown, `410` expired, `508` target is linkly itself |
 | `GET /api/links/{code}` | Link info and stats | `200` | `404` |
 | `GET /api/links/{code}/qr.png?size=256` | QR code PNG | `200 image/png` | `400` size, `404`, `410` |
-| `DELETE /api/links/{code}` | Delete a link and its clicks | `204` | `401` bad token, `403` deletion disabled, `404` |
+| `DELETE /api/links/{code}` | Delete a link and its clicks | `204` | `401` bad token, `403` deletion disabled, `404`, `429` after repeated bad tokens |
 | `GET /healthz` | Health, including a DB ping | `200 {"status":"ok"}` | `503` |
 | `GET /metrics` | Prometheus metrics | `200` | |
 | `GET /` | Web UI | `200` | |
@@ -109,7 +109,7 @@ Configuration comes only from environment variables. Invalid values stop startup
 | `LINKLY_ADDR` | `:8080` | Listen address |
 | `LINKLY_DB` | `linkly.db` | SQLite database path (created if missing) |
 | `LINKLY_BASE_URL` | `http://localhost:8080` | Public origin used to build short URLs, and the host that links may not point to |
-| `LINKLY_ADMIN_TOKEN` | *(empty)* | Bearer token for `DELETE`; empty disables deletion |
+| `LINKLY_ADMIN_TOKEN` | *(empty)* | Bearer token for `DELETE`, at least 16 bytes after trimming whitespace; empty disables deletion |
 | `LINKLY_TRUST_PROXY` | `false` | Take the client IP from `X-Forwarded-For` (see below) |
 | `LINKLY_RATE_LIMIT` | `1` | Link creations per second per client; `0` disables limiting |
 | `LINKLY_RATE_BURST` | `10` | Bucket size: how many creations a client can make at once |

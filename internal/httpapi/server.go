@@ -47,6 +47,7 @@ type Server struct {
 	clicks     ClickRecorder
 	health     Pinger
 	limiter    *ratelimit.Limiter
+	authFails  *ratelimit.Limiter // failed admin-token attempts per client
 	reg        *metrics.Registry
 	log        *slog.Logger
 	baseURL    string
@@ -63,8 +64,16 @@ type serverMetrics struct {
 	redirectLatency *metrics.Histogram
 	redirectLoops   *metrics.Counter
 	rateLimited     *metrics.Counter
+	authThrottled   *metrics.Counter
 	panics          *metrics.Counter
 }
+
+// Failed admin authentication: authFailBurst attempts at once, then one per
+// minute, per client.
+const (
+	authFailBurst = 5
+	authFailRate  = 1.0 / 60
+)
 
 // Route patterns, also used as metric labels.
 const (
@@ -102,6 +111,11 @@ func New(opts Options) *Server {
 		trustProxy: opts.TrustProxy,
 		now:        opts.Now,
 	}
+	// Always on, even when LINKLY_RATE_LIMIT=0: it is a brute-force
+	// defence, not traffic shaping. Buckets are swept inline because the
+	// server has no background goroutines of its own.
+	s.authFails = ratelimit.New(authFailRate, authFailBurst, 10*time.Minute,
+		ratelimit.WithClock(opts.Now), ratelimit.WithAutoSweep(time.Minute))
 	s.m = serverMetrics{
 		requests: s.reg.NewCounterVec("linkly_http_requests_total",
 			"HTTP requests by route pattern and status code.", "route", "code"),
@@ -111,6 +125,8 @@ func New(opts Options) *Server {
 			"Redirects refused with 508 because the target is this server."),
 		rateLimited: s.reg.NewCounter("linkly_rate_limited_total",
 			"Requests refused with 429 by the rate limiter."),
+		authThrottled: s.reg.NewCounter("linkly_auth_throttled_total",
+			"DELETE requests refused with 429 after repeated wrong admin tokens."),
 		panics: s.reg.NewCounter("linkly_http_panics_total",
 			"Handler panics recovered by middleware."),
 	}
