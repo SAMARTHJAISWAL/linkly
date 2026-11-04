@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"time"
 
 	"github.com/SAMARTHJAISWAL/linkly/internal/store"
@@ -71,7 +72,26 @@ func New(st Store, opts Options) *Service {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Service{store: st, selfHost: opts.SelfHost, now: opts.Now, rand: opts.Rand}
+	return &Service{store: st, selfHost: NormalizeHost(opts.SelfHost), now: opts.Now, rand: opts.Rand}
+}
+
+// PointsAtSelf reports whether following target would come straight back
+// to this server: its host is the configured SelfHost or requestHost (the
+// Host of the request being served), compared after normalisation and
+// ignoring ports. Create refuses such links, but links stored before that
+// check existed, or created under a name the server did not know was its
+// own, are caught here at redirect time so a loop cannot be followed and
+// counted over and over.
+func (s *Service) PointsAtSelf(target, requestHost string) bool {
+	u, err := url.Parse(target)
+	if err != nil {
+		return false
+	}
+	host := NormalizeHost(u.Hostname())
+	if host == "" {
+		return false
+	}
+	return host == s.selfHost || host == NormalizeHost(requestHost)
 }
 
 // CreateRequest is the input for Create. A zero ExpiresAt means never.
@@ -79,12 +99,16 @@ type CreateRequest struct {
 	URL       string
 	Alias     string
 	ExpiresAt time.Time
+	// RequestHost is the Host the client used to reach the server, if any.
+	// Links to it are refused like links to Options.SelfHost: it is another
+	// name for this shortener.
+	RequestHost string
 }
 
 // Create validates req and stores a new link, generating a code unless an
 // alias was given.
 func (s *Service) Create(ctx context.Context, req CreateRequest) (store.Link, error) {
-	target, err := ValidateURL(req.URL, s.selfHost)
+	target, err := ValidateURL(req.URL, s.selfHost, req.RequestHost)
 	if err != nil {
 		return store.Link{}, err
 	}

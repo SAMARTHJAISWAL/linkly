@@ -218,7 +218,9 @@ func TestWithRealServer(t *testing.T) {
 	})
 
 	do := func(method, path, body string, hdr ...string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		// The demo's requests use this host (see cmd/linkly-wasm); the
+		// default, example.com, would be refused as a link to the server itself.
+		req := httptest.NewRequest(method, "http://linkly.invalid"+path, strings.NewReader(body))
 		for i := 0; i+1 < len(hdr); i += 2 {
 			req.Header.Set(hdr[i], hdr[i+1])
 		}

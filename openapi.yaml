@@ -157,6 +157,13 @@ paths:
           content:
             text/plain:
               schema: { type: string }
+        '508':
+          description: |
+            The target is this server itself (its configured host or the Host
+            the request used), so following it would loop. Not counted.
+          content:
+            text/plain:
+              schema: { type: string }
 
   /healthz:
     get:
@@ -249,8 +256,12 @@ components:
           format: uri
           maxLength: 2048
           description: |
-            Absolute http(s) URL with a host. URLs with embedded credentials
-            and URLs pointing at linkly's own host are rejected.
+            Absolute http(s) URL with an ASCII host (write internationalised
+            domains in punycode, `xn--...`). Rejected: embedded credentials;
+            loopback, private, link-local and unspecified IP literals, and
+            numeric hosts in non-standard IPv4 form (`2130706433`,
+            `0x7f000001`, `127.1`); `localhost`; and linkly's own host, by
+            `LINKLY_BASE_URL` or by the Host of the create request.
         alias:
           type: string
           minLength: 3

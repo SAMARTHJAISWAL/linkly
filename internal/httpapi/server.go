@@ -61,6 +61,7 @@ type Server struct {
 type serverMetrics struct {
 	requests        *metrics.CounterVec
 	redirectLatency *metrics.Histogram
+	redirectLoops   *metrics.Counter
 	rateLimited     *metrics.Counter
 	panics          *metrics.Counter
 }
@@ -106,6 +107,8 @@ func New(opts Options) *Server {
 			"HTTP requests by route pattern and status code.", "route", "code"),
 		redirectLatency: s.reg.NewHistogram("linkly_redirect_duration_seconds",
 			"Time to resolve and answer a redirect, excluding network I/O.", metrics.DefaultLatencyBuckets),
+		redirectLoops: s.reg.NewCounter("linkly_redirect_loops_total",
+			"Redirects refused with 508 because the target is this server."),
 		rateLimited: s.reg.NewCounter("linkly_rate_limited_total",
 			"Requests refused with 429 by the rate limiter."),
 		panics: s.reg.NewCounter("linkly_http_panics_total",

@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -100,11 +102,17 @@ func ValidateAlias(alias string) error {
 
 // ValidateURL checks a link target and returns it with surrounding
 // whitespace removed.
-// Only absolute http(s) URLs with a host are accepted; credentials in the
+//
+// Only absolute http(s) URLs with a host are accepted. Credentials in the
 // URL are refused because "https://bank.com@evil.example" is a classic
-// phishing disguise; and links back to selfHost are refused so a short
-// link can never redirect to another short link (or itself) in a loop.
-func ValidateURL(raw, selfHost string) (string, error) {
+// phishing disguise. The host must be plain ASCII (see validateHost) and
+// must not be a loopback, private, link-local or unspecified address, or a
+// numeric spelling of one, because such a link points at the shortener's
+// own machine or network rather than somewhere a visitor can reach. Links
+// to any of selfHosts (compared after the same normalisation) are refused
+// so a short link can never redirect to another short link, or itself, in
+// a loop.
+func ValidateURL(raw string, selfHosts ...string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", &ValidationError{"url", "is required"}
@@ -125,15 +133,107 @@ func ValidateURL(raw, selfHost string) (string, error) {
 	if u.User != nil {
 		return "", &ValidationError{"url", "must not contain credentials"}
 	}
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	host := NormalizeHost(u.Hostname())
 	if host == "" {
 		return "", &ValidationError{"url", "must include a host"}
 	}
-	if selfHost != "" && host == strings.ToLower(selfHost) {
-		return "", &ValidationError{"url", "must not point at this shortener"}
+	if msg := validateHost(host); msg != "" {
+		return "", &ValidationError{"url", msg}
 	}
-	// Return the input itself (trimmed) rather than u.String(): re-encoding
-	// would percent-escape internationalised hosts and could subtly change
-	// what the user asked for.
+	for _, self := range selfHosts {
+		if self != "" && host == NormalizeHost(self) {
+			return "", &ValidationError{"url", "must not point at this shortener"}
+		}
+	}
+	// Return the input itself (trimmed) rather than u.String(), which could
+	// subtly change what the user asked for. The host is plain ASCII by now,
+	// so nothing unexpected can reach a Location header.
 	return raw, nil
+}
+
+// NormalizeHost returns the form of a host name used for comparisons:
+// lower-cased, without a port, and without the trailing dot of a fully
+// qualified name ("Sho.RT.:443" and "sho.rt" are the same host). IPv6
+// literals lose their brackets.
+func NormalizeHost(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		host = host[1 : len(host)-1]
+	}
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
+// localPrefixes are address ranges, beyond what netip classifies as
+// loopback, private, link-local, multicast or unspecified, that reach the
+// local machine or carrier-internal networks.
+var localPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),     // "this network"; Linux routes it to localhost
+	netip.MustParsePrefix("100.64.0.0/10"), // carrier-grade NAT shared space
+	netip.MustParsePrefix("::/96"),         // IPv4-compatible IPv6 (deprecated)
+}
+
+// validateHost checks a normalised target host and returns a message
+// describing the problem, or "".
+//
+// Non-ASCII hosts are refused outright rather than converted with IDNA:
+// it needs no dependency, it rules out look-alike (homograph) hosts and
+// invisible characters such as a no-break space, and an internationalised
+// domain can still be shortened by writing it in its punycode (xn--) form,
+// which is what browsers send anyway.
+//
+// Numeric hosts are checked the way browsers parse them (WHATWG URL): a
+// host whose last label is a decimal or 0x-hex number is an IPv4 address,
+// so "2130706433", "0x7f000001", "0177.0.0.1" and "127.1" all mean
+// 127.0.0.1. Only the canonical dotted-quad spelling is accepted, and then
+// only for a public unicast address.
+func validateHost(host string) string {
+	for i := 0; i < len(host); i++ {
+		if host[i] >= 0x80 {
+			return "host must be ASCII; write internationalised domain names in punycode (xn--...)"
+		}
+	}
+	const localMsg = "must not point at a local or private address"
+	if ip, err := netip.ParseAddr(host); err == nil {
+		ip = ip.Unmap()
+		if ip.Zone() != "" || !ip.IsGlobalUnicast() || ip.IsPrivate() {
+			return localMsg
+		}
+		for _, p := range localPrefixes {
+			if p.Contains(ip) {
+				return localMsg
+			}
+		}
+		return ""
+	}
+	if len(host) > 253 {
+		return "has an invalid host"
+	}
+	labels := strings.Split(host, ".")
+	for _, l := range labels {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return "has an invalid host"
+		}
+		for i := 0; i < len(l); i++ {
+			if c := l[i]; !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return "has an invalid host"
+			}
+		}
+	}
+	if isNumericLabel(labels[len(labels)-1]) {
+		return "host must not be an IPv4 address in non-standard form"
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return localMsg // RFC 6761: always the loopback interface
+	}
+	return ""
+}
+
+// isNumericLabel reports whether a label is a number in the sense of the
+// WHATWG IPv4 parser: decimal digits, or 0x followed by hex digits.
+func isNumericLabel(l string) bool {
+	if rest, ok := strings.CutPrefix(l, "0x"); ok {
+		return strings.Trim(rest, "0123456789abcdef") == ""
+	}
+	return strings.Trim(l, "0123456789") == ""
 }

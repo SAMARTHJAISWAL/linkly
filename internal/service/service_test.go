@@ -125,9 +125,49 @@ func TestValidateURL(t *testing.T) {
 		{"https://example.com", "https://example.com", ""},
 		{"  https://example.com/a?b=c#d  ", "https://example.com/a?b=c#d", ""},
 		{"HTTP://Example.COM/Path", "HTTP://Example.COM/Path", ""},
-		{"http://127.0.0.1:8080/x", "http://127.0.0.1:8080/x", ""},
+		{"http://93.184.215.14:8080/x", "http://93.184.215.14:8080/x", ""},
 		{"https://[2001:db8::1]/", "https://[2001:db8::1]/", ""},
-		{"https://例え.jp/", "https://例え.jp/", ""},
+		{"https://xn--r8jz45g.jp/", "https://xn--r8jz45g.jp/", ""},
+		{"https://my_host.example.com/", "https://my_host.example.com/", ""},
+		{"https://example.com./", "https://example.com./", ""},
+		// Non-ASCII hosts are refused (punycode is the accepted spelling),
+		// which also stops junk such as a no-break space reaching Location.
+		{"https://例え.jp/", "", "ASCII"},
+		{"https://exa\u00a0mple.com/", "", "ASCII"},
+		{"https://exa%C2%A0mple.com/", "", "ASCII"},
+		{"https://ex\u0430mple.com/", "", "ASCII"}, // Cyrillic a
+		// IP literals that point back at this machine or a private network.
+		{"http://127.0.0.1:8080/x", "", "local or private"},
+		{"http://127.9.9.9/x", "", "local or private"},
+		{"http://[::1]/x", "", "local or private"},
+		{"http://[::ffff:127.0.0.1]/x", "", "local or private"},
+		{"http://[::]/x", "", "local or private"},
+		{"http://0.0.0.0/x", "", "local or private"},
+		{"http://0.1.2.3/x", "", "local or private"},
+		{"http://10.1.2.3/x", "", "local or private"},
+		{"http://172.16.0.1/x", "", "local or private"},
+		{"http://192.168.1.1/x", "", "local or private"},
+		{"http://100.64.0.1/x", "", "local or private"},
+		{"http://169.254.169.254/latest/meta-data", "", "local or private"},
+		{"http://[fe80::1]/x", "", "local or private"},
+		{"http://[fe80::1%25en0]/x", "", "local or private"},
+		{"http://[fc00::1]/x", "", "local or private"},
+		{"http://224.0.0.1/x", "", "local or private"},
+		{"http://255.255.255.255/x", "", "local or private"},
+		// Numeric hosts that browsers parse as IPv4 addresses.
+		{"http://2130706433/x", "", "non-standard"},
+		{"http://0x7f000001/x", "", "non-standard"},
+		{"http://0x7f.0.0.1/x", "", "non-standard"},
+		{"http://0177.0.0.1/x", "", "non-standard"},
+		{"http://127.1/x", "", "non-standard"},
+		{"http://1.2.3.4.5/x", "", "non-standard"},
+		{"http://example.0x10/x", "", "non-standard"},
+		{"http://localhost:8080/x", "", "local or private"},
+		{"http://LOCALHOST./x", "", "local or private"},
+		{"http://app.localhost/x", "", "local or private"},
+		{"http://a..b.com/x", "", "invalid host"},
+		{"http://-/x", "", "invalid host"},
+		{"http://" + strings.Repeat("a", 64) + ".com/x", "", "invalid host"},
 		{"", "", "required"},
 		{"example.com", "", "http or https"},
 		{"ftp://example.com/f", "", "http or https"},
@@ -144,11 +184,12 @@ func TestValidateURL(t *testing.T) {
 		{"https://SHO.RT./abc", "", "this shortener"},
 		{"https://sho.rt:8443/abc", "", "this shortener"},
 		{"https://sub.sho.rt/abc", "https://sub.sho.rt/abc", ""},
+		{"https://other.name/abc", "", "this shortener"}, // the request's Host
 		{"https://example.com/" + strings.Repeat("a", MaxURLLength), "", "at most"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
-			got, err := ValidateURL(tt.in, "sho.rt")
+			got, err := ValidateURL(tt.in, "sho.rt", "other.name")
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -408,6 +449,58 @@ func TestValidCodeSyntax(t *testing.T) {
 	for in, want := range tests {
 		if got := ValidCodeSyntax(in); got != want {
 			t.Errorf("ValidCodeSyntax(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestSelfHostIsNormalised: the configured host and the request's Host are
+// normalised exactly like the target's, so case, a trailing dot or a port
+// cannot be used to point a link back at the shortener.
+func TestSelfHostIsNormalised(t *testing.T) {
+	ctx := context.Background()
+	svc := New(newMemStore(), Options{SelfHost: "SHO.RT.", Now: func() time.Time { return fixedNow }})
+	for _, target := range []string{"https://sho.rt/x", "https://SHO.rt./x", "http://sho.rt:80/x"} {
+		_, err := svc.Create(ctx, CreateRequest{URL: target})
+		var ve *ValidationError
+		if !errors.As(err, &ve) || !strings.Contains(ve.Msg, "this shortener") {
+			t.Errorf("%s: err = %v, want a self-link error", target, err)
+		}
+	}
+	for _, host := range []string{"Alias.Example:8080", "alias.example.", "[2001:db8::7]:80"} {
+		target := "https://alias.example/x"
+		if strings.HasPrefix(host, "[") {
+			target = "https://[2001:db8::7]/x"
+		}
+		_, err := svc.Create(ctx, CreateRequest{URL: target, RequestHost: host})
+		var ve *ValidationError
+		if !errors.As(err, &ve) || !strings.Contains(ve.Msg, "this shortener") {
+			t.Errorf("request host %s: err = %v, want a self-link error", host, err)
+		}
+	}
+	if _, err := svc.Create(ctx, CreateRequest{URL: "https://example.com/x", RequestHost: "alias.example"}); err != nil {
+		t.Fatalf("unrelated target refused: %v", err)
+	}
+}
+
+func TestPointsAtSelf(t *testing.T) {
+	svc := New(newMemStore(), Options{SelfHost: "sho.rt"})
+	tests := []struct {
+		target, reqHost string
+		want            bool
+	}{
+		{"https://sho.rt/abc", "", true},
+		{"https://SHO.RT./abc", "127.0.0.1:8080", true},
+		{"http://127.0.0.1:8080/loopy", "127.0.0.1:8080", true},
+		{"http://127.0.0.1:9999/loopy", "127.0.0.1:8080", true}, // same host, any port
+		{"http://[::1]:8080/x", "[::1]:8080", true},
+		{"http://Other.Name./x", "other.name", true},
+		{"https://example.com/x", "127.0.0.1:8080", false},
+		{"https://sub.sho.rt/x", "", false},
+		{"::not a url", "", false},
+	}
+	for _, tt := range tests {
+		if got := svc.PointsAtSelf(tt.target, tt.reqHost); got != tt.want {
+			t.Errorf("PointsAtSelf(%q, %q) = %v, want %v", tt.target, tt.reqHost, got, tt.want)
 		}
 	}
 }

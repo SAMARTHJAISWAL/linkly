@@ -17,7 +17,7 @@ Redirects take one indexed read. The redirect handler queues the click and retur
 
 - **Short links.** Generated codes are 7 random base62 characters from `crypto/rand`, drawn with rejection sampling so no character is favoured, and regenerated on collision. You can pick your own alias instead (3–32 characters from `[A-Za-z0-9_-]`; reserved words such as `api` and `healthz` are refused).
 - **Expiry.** A link with an expiry time redirects until then and returns `410 Gone` afterwards. Its stats stay readable.
-- **URL safety.** Targets must be absolute `http`/`https` URLs of at most 2048 bytes. URLs with credentials (`https://bank.com@evil.example`) are refused, and so are links to linkly's own host, which would create redirect loops.
+- **URL safety.** Targets must be absolute `http`/`https` URLs of at most 2048 bytes with a plain-ASCII host (internationalised domains are accepted in their punycode `xn--` form). URLs with credentials (`https://bank.com@evil.example`) are refused, and so are loopback, private, link-local and unspecified IP literals, numeric hosts in non-standard IPv4 form (`2130706433`, `0x7f000001`, `127.1`) and `localhost`. Links to linkly's own host, as named by `LINKLY_BASE_URL` or by the `Host` of the create request, are refused too. Loops through a name linkly does not know is its own cannot be detected when the link is created, so the redirect handler checks again: a target on the host the visitor just used (or the base URL's host) gets `508 Loop Detected` and is not counted. A chain through two names that are both unknown to linkly is not detected; each hop counts once, up to the client's redirect limit (about 20 in browsers, 30 in curl -L).
 - **Analytics.** Each link reports its total clicks, clicks per day for the last 30 days, and its top 10 referring hosts.
 - **QR codes.** A PNG for any short link, 64 to 1024 px.
 - **Rate limiting.** A token bucket per client limits link creation. Idle buckets are evicted, `X-Forwarded-For` is used only when you opt in, and refused requests get a `429` with `Retry-After`.
@@ -61,7 +61,7 @@ The full contract is in [`openapi.yaml`](openapi.yaml), which validates with `op
 | Method & path | Purpose | Success | Errors |
 |---|---|---|---|
 | `POST /api/links` | Create a link (rate limited) | `201` + `Location` | `400` invalid, `409` alias taken, `413`, `415`, `429` + `Retry-After` |
-| `GET /{code}` | Redirect | `302` + `Location` | `404` unknown, `410` expired |
+| `GET /{code}` | Redirect | `302` + `Location` | `404` unknown, `410` expired, `508` target is linkly itself |
 | `GET /api/links/{code}` | Link info and stats | `200` | `404` |
 | `GET /api/links/{code}/qr.png?size=256` | QR code PNG | `200 image/png` | `400` size, `404`, `410` |
 | `DELETE /api/links/{code}` | Delete a link and its clicks | `204` | `401` bad token, `403` deletion disabled, `404` |

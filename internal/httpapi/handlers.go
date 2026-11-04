@@ -109,7 +109,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	in := service.CreateRequest{URL: req.URL, Alias: req.Alias}
+	in := service.CreateRequest{URL: req.URL, Alias: req.Alias, RequestHost: r.Host}
 	if req.ExpiresAt != nil {
 		// The service uses the zero time for "never"; an explicit
 		// 0001-01-01T00:00:00Z is a date in the past, not a request for a
@@ -159,6 +159,14 @@ func (s *Server) handleRedirect(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		s.log.ErrorContext(r.Context(), "resolving link", "code", code, "err", err, "request_id", RequestID(r.Context()))
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// A target on this very server (by the name the client used or the
+	// configured one) would loop; refuse it rather than count every lap.
+	if s.svc.PointsAtSelf(link.URL, r.Host) {
+		s.m.redirectLoops.Inc()
+		http.Error(w, "short link points back at this server", http.StatusLoopDetected)
 		return
 	}
 

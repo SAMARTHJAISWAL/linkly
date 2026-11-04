@@ -606,3 +606,74 @@ func TestCreateRejectsZeroExpiry(t *testing.T) {
 		t.Fatalf("null expires_at should mean never, got %v", l.ExpiresAt)
 	}
 }
+
+// TestRedirectRefusesLoops: a stored link whose target is this server, by
+// the name the client used or by the configured base URL, is answered with
+// 508 and not counted. Such links predate validation or were created under
+// another name; either way a client following redirects must not be able
+// to inflate the count.
+func TestRedirectRefusesLoops(t *testing.T) {
+	e := newEnv(t, envOpts{})
+	ctx := context.Background()
+	now := e.clock.Now()
+	for code, target := range map[string]string{
+		"loopy": e.srv.URL + "/loopy",          // http://127.0.0.1:PORT/loopy
+		"based": "https://SHO.RT./based",       // the base URL's host
+		"other": "http://127.0.0.1:1/anything", // same host as the request, other port
+	} {
+		if _, err := e.store.CreateLink(ctx, store.Link{Code: code, URL: target, CreatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, code := range []string{"loopy", "based", "other"} {
+		resp := e.do("GET", "/"+code, nil)
+		wantStatus(t, resp, http.StatusLoopDetected)
+		if loc := resp.Header.Get("Location"); loc != "" {
+			t.Fatalf("%s: Location = %q on a refused loop", code, loc)
+		}
+	}
+
+	// A client that follows redirects (curl -L, a browser) stops at once.
+	resp, err := http.Get(e.srv.URL + "/loopy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusLoopDetected {
+		t.Fatalf("following redirects: status %d, want 508", resp.StatusCode)
+	}
+	if n := e.recorder.Pending() + int(e.recorder.Recorded()); n != 0 {
+		t.Fatalf("%d clicks recorded for refused loops", n)
+	}
+	if got := scrape(t, e); !strings.Contains(got, "linkly_redirect_loops_total 4") {
+		t.Fatalf("metrics missing loop count:\n%s", got)
+	}
+}
+
+// TestCreateRefusesRequestHost: a link to the name the client used to reach
+// the server is refused even when it differs from LINKLY_BASE_URL.
+func TestCreateRefusesRequestHost(t *testing.T) {
+	e := newEnv(t, envOpts{})
+	req, _ := http.NewRequest("POST", e.srv.URL+"/api/links", strings.NewReader(`{"url":"https://Short.Example./abc"}`))
+	req.Host = "short.example:8443"
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	wantStatus(t, resp, http.StatusBadRequest)
+	if er := decode[errorResponse](t, resp); er.Field != "url" || !strings.Contains(er.Error, "this shortener") {
+		t.Fatalf("error body = %+v", er)
+	}
+}
+
+// TestCreateRefusesNonASCIIHost: the review's reproduction, a no-break
+// space inside the host, must not be stored or echoed in Location.
+func TestCreateRefusesNonASCIIHost(t *testing.T) {
+	e := newEnv(t, envOpts{})
+	for _, target := range []string{"https://exa mple.com/", "http://127.0.0.1:8080/loopy", "http://2130706433/"} {
+		resp := e.do("POST", "/api/links", map[string]any{"url": target})
+		wantStatus(t, resp, http.StatusBadRequest)
+	}
+}
