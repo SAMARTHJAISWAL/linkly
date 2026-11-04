@@ -2,7 +2,9 @@
 // (see cmd/linkly-wasm). It copies the real web UI from internal/httpapi/web
 // unchanged, adapts its index.html for hosting under a sub-path such as
 // https://user.github.io/linkly/ (relative asset paths, a CSP that allows
-// WebAssembly, the demo banner and glue script), and adds the demo files.
+// WebAssembly, the demo banner and glue script), and adds the demo files
+// and a 404.html that forwards /linkly/<code> to the hash route
+// /linkly/#/<code>.
 //
 // linkly.wasm and wasm_exec.js must already be in the output directory
 // (the Makefile's demo target puts them there) so they can be versioned
@@ -15,11 +17,13 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -36,14 +40,15 @@ func main() {
 	webDir := flag.String("web", "internal/httpapi/web", "the real UI's assets")
 	demoDir := flag.String("demo", "demo/web", "demo-only assets")
 	out := flag.String("out", "dist-demo", "output directory (must contain linkly.wasm and wasm_exec.js)")
+	base := flag.String("base", "/linkly/", "path the site is served under (GitHub Pages: /<repo>/), for 404.html")
 	flag.Parse()
-	if err := run(*webDir, *demoDir, *out); err != nil {
+	if err := run(*webDir, *demoDir, *out, *base); err != nil {
 		fmt.Fprintln(os.Stderr, "assemble:", err)
 		os.Exit(1)
 	}
 }
 
-func run(webDir, demoDir, out string) error {
+func run(webDir, demoDir, out, base string) error {
 	if err := os.MkdirAll(filepath.Join(out, "static"), 0o755); err != nil {
 		return err
 	}
@@ -89,8 +94,62 @@ func run(webDir, demoDir, out string) error {
 	if err := os.WriteFile(filepath.Join(out, "index.html"), []byte(page), 0o644); err != nil {
 		return err
 	}
+	notFound, err := notFoundPage(base)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(out, "404.html"), []byte(notFound), 0o644); err != nil {
+		return err
+	}
 	// Serve files as-is on GitHub Pages (no Jekyll processing).
 	return os.WriteFile(filepath.Join(out, ".nojekyll"), nil, 0o644)
+}
+
+// safeBase is an absolute path of plain segments ending in a slash: it
+// cannot start with "//" (a protocol-relative URL), climb with "..", or
+// contain anything that needs escaping in a JS string or HTML.
+var safeBase = regexp.MustCompile(`^/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*/)*$`)
+
+// notFoundPage returns the 404.html that GitHub Pages serves for any path
+// under the site that has no file. Short links in the demo are hash routes
+// (<base>#/<code>), but people naturally type or paste <base><code>; this
+// page forwards those to the hash route.
+//
+// It only ever forwards to base + "#/" + code, where base is a fixed,
+// validated same-origin path and code matches the alias syntax, so it
+// cannot be turned into an open redirect. Anything else gets a plain
+// not-found message. The script is inline (an external file's relative URL
+// would break at nested paths) and allowed by its hash in the CSP.
+func notFoundPage(base string) (string, error) {
+	if !safeBase.MatchString(base) || strings.Contains(base, "/../") || strings.Contains(base, "/./") {
+		return "", fmt.Errorf("-base %q must be an absolute path of plain segments ending in /, e.g. /linkly/", base)
+	}
+	script := `
+(() => {
+  const base = "` + base + `";
+  const path = location.pathname;
+  const m = path.startsWith(base) && /^([A-Za-z0-9_-]{1,32})\/?$/.exec(path.slice(base.length));
+  if (m) location.replace(base + "#/" + m[1]);
+})();
+`
+	sum := sha256.Sum256([]byte(script))
+	csp := "default-src 'none'; script-src 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'; base-uri 'none'; form-action 'none'"
+	return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="` + csp + `">
+  <meta name="referrer" content="no-referrer">
+  <title>linkly · not found</title>
+  <script>` + script + `</script>
+</head>
+<body>
+  <h1>Not found</h1>
+  <p>There is nothing at this address. <a href="` + base + `">Open the linkly demo</a>.</p>
+</body>
+</html>
+`, nil
 }
 
 // adapt rewrites the server's index.html for the static demo.

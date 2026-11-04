@@ -48,6 +48,9 @@ compose-up: ## Build and start with docker compose
 	docker compose up --build
 
 DEMO_DIR := dist-demo
+# Path the demo is served under; on GitHub Pages that is /<repository>/.
+# 404.html forwards <DEMO_BASE><code> to <DEMO_BASE>#/<code>.
+DEMO_BASE ?= /linkly/
 
 demo: ## Build the in-browser WebAssembly demo site into dist-demo/
 	rm -rf $(DEMO_DIR)
@@ -56,9 +59,11 @@ demo: ## Build the in-browser WebAssembly demo site into dist-demo/
 	@goroot=$$(go env GOROOT); \
 	if [ -f "$$goroot/lib/wasm/wasm_exec.js" ]; then cp "$$goroot/lib/wasm/wasm_exec.js" $(DEMO_DIR)/; \
 	else cp "$$goroot/misc/wasm/wasm_exec.js" $(DEMO_DIR)/; fi
-	go run ./demo/assemble -out $(DEMO_DIR)
+	go run ./demo/assemble -out $(DEMO_DIR) -base $(DEMO_BASE)
 	@ls -l $(DEMO_DIR)/linkly.wasm
 
+# python's http.server does not serve 404.html for missing paths the way
+# GitHub Pages does, so /linkly/<code> forwarding cannot be tried here.
 demo-serve: demo ## Serve the demo at http://localhost:8000/linkly/
 	@mkdir -p $(DEMO_DIR)-serve && rm -f $(DEMO_DIR)-serve/linkly && ln -s ../$(DEMO_DIR) $(DEMO_DIR)-serve/linkly
 	@echo "http://localhost:8000/linkly/"
