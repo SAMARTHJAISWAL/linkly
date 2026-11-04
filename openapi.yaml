@@ -124,6 +124,10 @@ paths:
       tags: [links]
       operationId: getLinkQRCode
       summary: QR code for the short URL
+      description: |
+        Recently rendered images are served from an in-memory cache. Renders
+        that miss it are rate limited per client (bursts of 20, then 5 per
+        second) unless `LINKLY_RATE_LIMIT` is 0.
       parameters:
         - name: size
           in: query
@@ -138,6 +142,7 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '404': { $ref: '#/components/responses/NotFound' }
         '410': { $ref: '#/components/responses/Gone' }
+        '429': { $ref: '#/components/responses/RateLimited' }
 
   /{code}:
     parameters:
@@ -247,7 +252,7 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
     RateLimited:
-      description: Too many link creations from this client.
+      description: Too many requests from this client (link creations, or QR renders that missed the cache).
       headers:
         Retry-After:
           description: Seconds until a request will be accepted.

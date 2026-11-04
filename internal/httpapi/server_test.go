@@ -715,3 +715,61 @@ func TestDeleteThrottlesFailedAuth(t *testing.T) {
 		t.Fatalf("metrics missing throttled count:\n%s", got)
 	}
 }
+
+// TestQRRendersAreCachedAndThrottled: a QR PNG costs about a thousand
+// redirects of CPU, so repeated requests are served from a cache and
+// cache misses are rate limited per client.
+func TestQRRendersAreCachedAndThrottled(t *testing.T) {
+	e := newEnv(t, envOpts{rate: 1, burst: 10})
+	link := e.create(map[string]any{"url": "https://example.com"})
+	qr := func(size int) *http.Response {
+		return e.do("GET", fmt.Sprintf("/api/links/%s/qr.png?size=%d", link.Code, size), nil)
+	}
+
+	first, _ := io.ReadAll(qr(256).Body)
+	for range 50 {
+		resp := qr(256)
+		wantStatus(t, resp, http.StatusOK)
+		if b, _ := io.ReadAll(resp.Body); !bytes.Equal(b, first) {
+			t.Fatal("cached PNG differs from the first render")
+		}
+	}
+	if got := scrape(t, e); !strings.Contains(got, "linkly_qr_renders_total 1\n") {
+		t.Fatalf("51 identical requests should render once:\n%s", got)
+	}
+
+	// Distinct sizes are cache misses: the burst is spent, then 429.
+	for i := range qrRenderBurst - 1 {
+		wantStatus(t, qr(300+i), http.StatusOK)
+	}
+	resp := qr(900)
+	wantStatus(t, resp, http.StatusTooManyRequests)
+	if resp.Header.Get("Retry-After") == "" {
+		t.Fatal("429 without Retry-After")
+	}
+	// Cached images are still served while the client is throttled.
+	wantStatus(t, qr(256), http.StatusOK)
+	e.clock.Advance(time.Second)
+	wantStatus(t, qr(900), http.StatusOK)
+}
+
+func TestQRCacheIsBounded(t *testing.T) {
+	c := newPNGCache(3)
+	for i := range 5 {
+		c.put(qrKey{"c", i}, []byte{byte(i)})
+	}
+	if c.len() != 3 {
+		t.Fatalf("len = %d, want 3", c.len())
+	}
+	if _, ok := c.get(qrKey{"c", 1}); ok {
+		t.Fatal("oldest entries should have been evicted")
+	}
+	c.get(qrKey{"c", 2}) // refresh 2, so 3 is now the oldest
+	c.put(qrKey{"c", 9}, nil)
+	if _, ok := c.get(qrKey{"c", 2}); !ok {
+		t.Fatal("recently used entry was evicted")
+	}
+	if _, ok := c.get(qrKey{"c", 3}); ok {
+		t.Fatal("least recently used entry was kept")
+	}
+}

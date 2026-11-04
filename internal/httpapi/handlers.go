@@ -236,10 +236,24 @@ func (s *Server) handleQR(w http.ResponseWriter, r *http.Request) {
 		s.writeServiceError(w, r, err)
 		return
 	}
-	png, err := qrcode.Encode(s.baseURL+"/"+link.Code, qrcode.Medium, size)
-	if err != nil {
-		s.writeServiceError(w, r, err)
-		return
+	key := qrKey{link.Code, size}
+	png, ok := s.qrCache.get(key)
+	if !ok {
+		if s.qrLimiter != nil {
+			if ok, wait := s.qrLimiter.Allow(clientKey(r, s.trustProxy)); !ok {
+				s.m.rateLimited.Inc()
+				w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(wait)))
+				writeError(w, r, http.StatusTooManyRequests, "too many QR codes requested; retry later", "")
+				return
+			}
+		}
+		png, err = qrcode.Encode(s.baseURL+"/"+link.Code, qrcode.Medium, size)
+		if err != nil {
+			s.writeServiceError(w, r, err)
+			return
+		}
+		s.m.qrRenders.Inc()
+		s.qrCache.put(key, png)
 	}
 	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Content-Length", strconv.Itoa(len(png)))

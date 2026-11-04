@@ -19,7 +19,7 @@ Redirects take one indexed read. The redirect handler queues the click and retur
 - **Expiry.** A link with an expiry time redirects until then and returns `410 Gone` afterwards. Its stats stay readable.
 - **URL safety.** Targets must be absolute `http`/`https` URLs of at most 2048 bytes with a plain-ASCII host (internationalised domains are accepted in their punycode `xn--` form). URLs with credentials (`https://bank.com@evil.example`) are refused, and so are loopback, private, link-local and unspecified IP literals, numeric hosts in non-standard IPv4 form (`2130706433`, `0x7f000001`, `127.1`) and `localhost`. Links to linkly's own host, as named by `LINKLY_BASE_URL` or by the `Host` of the create request, are refused too. Loops through a name linkly does not know is its own cannot be detected when the link is created, so the redirect handler checks again: a target on the host the visitor just used (or the base URL's host) gets `508 Loop Detected` and is not counted. A chain through two names that are both unknown to linkly is not detected; each hop counts once, up to the client's redirect limit (about 20 in browsers, 30 in curl -L).
 - **Analytics.** Each link reports its total clicks, clicks per day for the last 30 days, and its top 10 referring hosts.
-- **QR codes.** A PNG for any short link, 64 to 1024 px.
+- **QR codes.** A PNG for any short link, 64 to 1024 px. Rendering one costs roughly a thousand redirects of CPU, so the last 256 images are cached in memory, and renders that miss the cache are rate limited per client (bursts of 20, then 5 per second) while `LINKLY_RATE_LIMIT` is on.
 - **Rate limiting.** A token bucket per client limits link creation. Idle buckets are evicted, `X-Forwarded-For` is used only when you opt in, and refused requests get a `429` with `Retry-After`.
 - **Admin delete.** `DELETE` requires a bearer token of at least 16 bytes, compared in constant time. Deletion is disabled until a token is configured. After 5 wrong tokens a client gets `429` (with `Retry-After`) for every `DELETE`, right token or not, and earns one more attempt per minute.
 - **Operations.** `/healthz` checks the database. `/metrics` serves the Prometheus text format. Logs are structured JSON (`log/slog`) with request IDs. The server recovers from handler panics, sets timeouts on the `http.Server`, and shuts down gracefully, flushing queued clicks first.
@@ -63,7 +63,7 @@ The full contract is in [`openapi.yaml`](openapi.yaml), which validates with `op
 | `POST /api/links` | Create a link (rate limited) | `201` + `Location` | `400` invalid, `409` alias taken, `413`, `415`, `429` + `Retry-After` |
 | `GET /{code}` | Redirect | `302` + `Location` | `404` unknown, `410` expired, `508` target is linkly itself |
 | `GET /api/links/{code}` | Link info and stats | `200` | `404` |
-| `GET /api/links/{code}/qr.png?size=256` | QR code PNG | `200 image/png` | `400` size, `404`, `410` |
+| `GET /api/links/{code}/qr.png?size=256` | QR code PNG | `200 image/png` | `400` size, `404`, `410`, `429` + `Retry-After` |
 | `DELETE /api/links/{code}` | Delete a link and its clicks | `204` | `401` bad token, `403` deletion disabled, `404`, `429` after repeated bad tokens |
 | `GET /healthz` | Health, including a DB ping | `200 {"status":"ok"}` | `503` |
 | `GET /metrics` | Prometheus metrics | `200` | |

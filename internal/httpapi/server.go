@@ -31,7 +31,7 @@ type Options struct {
 	Service  *service.Service
 	Clicks   ClickRecorder
 	Health   Pinger
-	Limiter  *ratelimit.Limiter // rate limits link creation; nil disables limiting
+	Limiter  *ratelimit.Limiter // rate limits link creation; nil disables limiting (QR renders too)
 	Registry *metrics.Registry  // where HTTP metrics are registered; nil creates a private one
 	Logger   *slog.Logger
 
@@ -48,6 +48,8 @@ type Server struct {
 	health     Pinger
 	limiter    *ratelimit.Limiter
 	authFails  *ratelimit.Limiter // failed admin-token attempts per client
+	qrLimiter  *ratelimit.Limiter // QR renders (cache misses) per client; nil when limiting is off
+	qrCache    *pngCache
 	reg        *metrics.Registry
 	log        *slog.Logger
 	baseURL    string
@@ -65,6 +67,7 @@ type serverMetrics struct {
 	redirectLoops   *metrics.Counter
 	rateLimited     *metrics.Counter
 	authThrottled   *metrics.Counter
+	qrRenders       *metrics.Counter
 	panics          *metrics.Counter
 }
 
@@ -116,6 +119,14 @@ func New(opts Options) *Server {
 	// server has no background goroutines of its own.
 	s.authFails = ratelimit.New(authFailRate, authFailBurst, 10*time.Minute,
 		ratelimit.WithClock(opts.Now), ratelimit.WithAutoSweep(time.Minute))
+	// QR renders get their own bucket rather than spending link-creation
+	// tokens: the UI fetches a QR for every link it creates, and a render's
+	// cost is unrelated to a creation's. It follows LINKLY_RATE_LIMIT on/off.
+	s.qrCache = newPNGCache(qrCacheEntries)
+	if opts.Limiter != nil {
+		s.qrLimiter = ratelimit.New(qrRenderRate, qrRenderBurst, 10*time.Minute,
+			ratelimit.WithClock(opts.Now), ratelimit.WithAutoSweep(time.Minute))
+	}
 	s.m = serverMetrics{
 		requests: s.reg.NewCounterVec("linkly_http_requests_total",
 			"HTTP requests by route pattern and status code.", "route", "code"),
@@ -125,6 +136,8 @@ func New(opts Options) *Server {
 			"Redirects refused with 508 because the target is this server."),
 		rateLimited: s.reg.NewCounter("linkly_rate_limited_total",
 			"Requests refused with 429 by the rate limiter."),
+		qrRenders: s.reg.NewCounter("linkly_qr_renders_total",
+			"QR code PNGs rendered (requests not served from the cache)."),
 		authThrottled: s.reg.NewCounter("linkly_auth_throttled_total",
 			"DELETE requests refused with 429 after repeated wrong admin tokens."),
 		panics: s.reg.NewCounter("linkly_http_panics_total",
