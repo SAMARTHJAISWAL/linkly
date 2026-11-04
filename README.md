@@ -203,19 +203,21 @@ make lint     # gofmt check, go vet, staticcheck
 make bench
 ```
 
-There are 71 test functions and 126 table-driven subtests, and all of them pass under `-race`. `go vet`, `gofmt -l` and `staticcheck` 2026.2.2 report nothing. Total statement coverage is **90.5%**:
+There are 104 test functions and 189 table-driven subtests, and all of them pass under `-race`. Two of them run JavaScript under Node (the UI's stats route and the demo's 404 page) and are skipped when `node` is not installed. `go vet`, `gofmt -l` and `staticcheck` 2026.2.2 report nothing. Total statement coverage is **90.4%**:
 
 | Package | Coverage | What is tested |
 |---|---|---|
-| `internal/ratelimit` | 97.9% | Refill timing, partial refill and caps on an injectable clock; eviction; TTL never shorter than refill; concurrency |
-| `internal/analytics` | 97.3% | Flush on `Close`, batch sizing, ticker flush, never blocking when full, drop accounting, sink errors, close-vs-record races, referrer parsing |
+| `internal/ratelimit` | 98.5% | Refill timing, partial refill and caps on an injectable clock; `Peek` without spending; eviction, inline auto-sweep; TTL never shorter than refill; concurrency |
+| `internal/analytics` | 97.6% | Flush on `Close`, batch sizing, ticker flush, never blocking when full, drop accounting, sink errors, orphaned clicks, `Close` waiting for the worker after its deadline, close-vs-record races, referrer parsing |
+| `internal/memstore` | 97.6% | The in-memory store behind the WebAssembly demo: CRUD, ids never reused, clicks kept with their link id, stats ordering, snapshot round trip; the real handler on top of it |
 | `internal/metrics` | 97.1% | Exact exposition output, escaping, histogram `le` semantics, concurrency |
-| `internal/service` | 96.0% | Code generation (bias check, rejection sampling, collision retry, give-up), alias and URL validation tables, expiry rules, 30-day fill |
-| `internal/httpapi` | 94.9% | End-to-end over `httptest`: create → redirect → stats; validation table; expiry → 410; 429 with `Retry-After`; `X-Forwarded-For` trust; delete with and without the token; QR PNG decoding; health, metrics, UI and CSP; request IDs; panic recovery |
-| `internal/app` | 94.6% | Real server on a socket: clicks queued under a 1-hour flush interval reach the DB on graceful shutdown |
-| `internal/config` | 90.3% | Defaults, overrides, aggregated errors |
-| `internal/store` | 81.8% | Against a temp SQLite file: CRUD, conflicts, case sensitivity, stats queries, cascade delete, reopen and WAL, read-only pool, concurrent reads and writes, migration ordering |
-| `cmd/linkly` | 45.2% | Flags and config errors (the serve path is covered through `internal/app`) |
+| `internal/app` | 96.8% | Real server on a socket: clicks queued under a 1-hour flush interval reach the DB on graceful shutdown, including while a slow client holds a connection through the whole HTTP drain |
+| `internal/service` | 95.2% | Code generation (bias check, rejection sampling, collision retry, give-up), alias and URL validation tables (local, private and numeric IP hosts, non-ASCII hosts, self links by base URL or request host), expiry rules, 30-day fill |
+| `internal/httpapi` | 94.5% | End-to-end over `httptest`: create → redirect → stats; validation table; strict JSON and Content-Type; expiry → 410; redirect loops → 508 and uncounted; 429 with `Retry-After`; `X-Forwarded-For` trust; delete with and without the token, failed-auth throttling; queued clicks after delete and re-create; QR PNG decoding, caching and render limits; health, metrics, UI and CSP; request IDs; panic recovery; the UI script's stats route under Node |
+| `internal/config` | 91.6% | Defaults, overrides, aggregated errors, NaN/Inf rate, base URL credentials and host form, admin token length |
+| `internal/store` | 81.6% | Against a temp SQLite file: CRUD, conflicts, case sensitivity, stats queries, cascade delete, ids never reused, clicks stored by link id, reopen and WAL, read-only pool, concurrent reads and writes, two pools migrating a fresh file at once, migrating a version-1 database, migration ordering |
+| `demo/assemble` | 65.6% | The demo's `index.html` edits against the real UI, the assembled site, and the 404 page's forwarding rules under Node |
+| `cmd/linkly` | 45.2% | Flags and config errors, the Dockerfile's stop signal against the default shutdown budget (the serve path is covered through `internal/app`) |
 
 ## Benchmarks
 
